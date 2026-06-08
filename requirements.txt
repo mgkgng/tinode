@@ -1,0 +1,2 @@
+# Python deps for the tinode pack. Keep empty until a node needs one.
+# ComfyUI Manager installs these on pack install.
