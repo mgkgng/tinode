@@ -13,10 +13,7 @@ class ClipTextEncodeOverride(TiNode):
 		return {
 			"required": {
 				"clip": ("CLIP",),
-				"text": ("STRING", {"multiline": True, "dynamicPrompts": True, "default": ""}),
-			},
-			"optional": {
-				"text_override": ("STRING", {"forceInput": True}),
+				"text": ("STRING", {"forceInput": True}),
 			},
 		}
 
@@ -25,12 +22,11 @@ class ClipTextEncodeOverride(TiNode):
 	FUNCTION = "execute"
 
 	@classmethod
-	def IS_CHANGED(cls, clip, text, text_override=None):
-		return text_override if text_override else text
+	def IS_CHANGED(cls, clip, text):
+		return text
 
-	def execute(self, clip, text, text_override=None):
+	def execute(self, clip, text):
 		if clip is None:
 			raise RuntimeError("clip input is None — connect a CLIP model.")
-		prompt = text_override if text_override else text
-		tokens = clip.tokenize(prompt)
+		tokens = clip.tokenize(text)
 		return (clip.encode_from_tokens_scheduled(tokens),)
