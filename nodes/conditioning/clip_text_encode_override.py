@@ -24,6 +24,10 @@ class ClipTextEncodeOverride(TiNode):
 	RETURN_NAMES = ("conditioning",)
 	FUNCTION = "execute"
 
+	@classmethod
+	def IS_CHANGED(cls, clip, text, text_override=None):
+		return text_override if text_override else text
+
 	def execute(self, clip, text, text_override=None):
 		if clip is None:
 			raise RuntimeError("clip input is None — connect a CLIP model.")
