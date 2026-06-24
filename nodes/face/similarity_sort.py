@@ -94,7 +94,26 @@ class FaceSimilaritySort(TiNode):
 		f = max(faces, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
 		return torch.from_numpy(f.normed_embedding).float()
 
+	# Consume the WHOLE batch in one call. A LIST source (SEGSToImageList,
+	# MaskCrop feeding through a list node, ...) would otherwise make ComfyUI
+	# run this once per frame -> n=1 -> nothing to sort. Collapse to one batch.
+	INPUT_IS_LIST = True
+
+	@staticmethod
+	def _first(v, default=None):
+		if isinstance(v, list):
+			return v[0] if v else default
+		return v
+
 	def execute(self, images, start_index, model="buffalo_l", det_size=640):
+		imgs = images if isinstance(images, list) else [images]
+		images = torch.cat(
+			[im if im.dim() == 4 else im.unsqueeze(0) for im in imgs], dim=0
+		)
+		start_index = int(self._first(start_index, 0))
+		model = self._first(model, "buffalo_l")
+		det_size = int(self._first(det_size, 640))
+
 		n = images.shape[0]
 		start_index = max(0, min(start_index, n - 1))
 		if n <= 1:
