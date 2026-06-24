@@ -1,2 +1,7 @@
 # Python deps for the tinode pack. Keep empty until a node needs one.
 # ComfyUI Manager installs these on pack install.
+
+# Face Similarity Sort — ArcFace embeddings via InsightFace.
+# On the GPU server swap onnxruntime -> onnxruntime-gpu for CUDA.
+insightface
+onnxruntime
