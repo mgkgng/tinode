@@ -112,14 +112,24 @@ class FaceSimilaritySort(TiNode):
 	FUNCTION = "execute"
 
 	def _embed(self, app, frame: torch.Tensor):
-		# frame [H,W,C] float 0-1 RGB -> InsightFace wants uint8 BGR
+		# Inputs are already single centered face crops, often filling the
+		# whole frame -> SCRFD detection misses (it expects faces smaller than
+		# the frame with context). So skip detection entirely and run the
+		# recognition (ArcFace) model directly on the resized crop. Doing this
+		# for EVERY frame keeps preprocessing uniform, so cosine similarities
+		# are comparable across the whole batch.
+		rec = app.models.get("recognition")
+		if rec is None:
+			return None
+		import cv2
 		rgb = (frame.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
 		bgr = np.ascontiguousarray(rgb[:, :, ::-1])
-		faces = app.get(bgr)
-		if not faces:
+		aligned = cv2.resize(bgr, (112, 112))
+		emb = np.asarray(rec.get_feat(aligned)).reshape(-1).astype(np.float32)
+		norm = float(np.linalg.norm(emb))
+		if norm == 0.0:
 			return None
-		f = max(faces, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
-		return torch.from_numpy(f.normed_embedding).float()
+		return torch.from_numpy(emb / norm).float()
 
 	# Consume the WHOLE batch in one call. A LIST source (SEGSToImageList,
 	# MaskCrop feeding through a list node, ...) would otherwise make ComfyUI
