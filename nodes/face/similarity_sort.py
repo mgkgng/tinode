@@ -11,6 +11,10 @@ Embeddings are L2-normalised, so cosine similarity is a plain dot product.
 
 from __future__ import annotations
 
+import glob
+import os
+import shutil
+
 import numpy as np
 import torch
 
@@ -23,10 +27,33 @@ from ...registry import register
 _APPS: dict = {}
 
 
+def _flatten_pack(name: str) -> None:
+	"""Work around InsightFace's antelopev2 double-nesting bug.
+
+	Some packs (notably antelopev2) ship a zip that extracts to
+	~/.insightface/models/<name>/<name>/*.onnx — one level too deep. The
+	loader globs *.onnx in <name>/ only, finds nothing, and asserts. If the
+	top level has no .onnx but a subfolder does, move them up.
+	"""
+	root = os.path.join(
+		os.environ.get("INSIGHTFACE_ROOT", os.path.expanduser("~/.insightface")),
+		"models", name,
+	)
+	if not os.path.isdir(root):
+		return
+	if glob.glob(os.path.join(root, "*.onnx")):
+		return                                   # already flat
+	for f in glob.glob(os.path.join(root, "*", "*.onnx")):
+		dst = os.path.join(root, os.path.basename(f))
+		if not os.path.exists(dst):
+			shutil.move(f, dst)
+
+
 def _get_app(name: str, det_size: int):
 	key = (name, det_size)
 	if key not in _APPS:
 		from insightface.app import FaceAnalysis
+		_flatten_pack(name)
 		app = FaceAnalysis(name=name, allowed_modules=["detection", "recognition"])
 		app.prepare(ctx_id=0, det_size=(det_size, det_size))
 		_APPS[key] = app
