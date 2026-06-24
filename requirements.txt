@@ -5,3 +5,6 @@
 # On the GPU server swap onnxruntime -> onnxruntime-gpu for CUDA.
 insightface
 onnxruntime
+
+# Face Landmark Morph — 468-point face mesh for feature-aware warping.
+mediapipe
