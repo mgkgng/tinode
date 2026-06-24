@@ -71,8 +71,27 @@ class BatchDropIndices(TiNode):
 	RETURN_NAMES = ("images",)
 	FUNCTION = "execute"
 
+	# Consume the WHOLE upstream batch in one call. Without this, a LIST source
+	# (e.g. SEGSToImageList) makes ComfyUI run the node once per frame -> the
+	# node only ever sees a 1-frame batch and drops nothing. With it, every
+	# input arrives as a list; we collapse images to a single batch tensor.
+	INPUT_IS_LIST = True
+
+	@staticmethod
+	def _first(v, default=None):
+		if isinstance(v, list):
+			return v[0] if v else default
+		return v
+
 	def execute(self, images, indices, one_based=True):
-		keep = parse_keep(indices, images.shape[0], one_based)
+		imgs = images if isinstance(images, list) else [images]
+		batch = torch.cat(
+			[im if im.dim() == 4 else im.unsqueeze(0) for im in imgs], dim=0
+		)
+		idx = self._first(indices, "")
+		ob = self._first(one_based, True)
+
+		keep = parse_keep(idx, batch.shape[0], ob)
 		if keep is None:
-			return (images,)                     # invalid or empty result -> unchanged
-		return (images[torch.tensor(keep, dtype=torch.long)],)
+			return (batch,)                      # invalid or empty result -> unchanged
+		return (batch[torch.tensor(keep, dtype=torch.long)],)
