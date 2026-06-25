@@ -38,8 +38,8 @@ class MaskCropCenterFill(TiNode):
 			},
 		}
 
-	RETURN_TYPES = ("IMAGE",)
-	RETURN_NAMES = ("images",)
+	RETURN_TYPES = ("IMAGE", "MASK")
+	RETURN_NAMES = ("images", "masks")
 	FUNCTION = "execute"
 
 	def execute(self, image, mask, size, padding, apply_mask=True, threshold=0.5):
@@ -50,6 +50,7 @@ class MaskCropCenterFill(TiNode):
 		H, W, C = img.shape
 		inner = max(1, size - 2 * padding)
 		out = []
+		out_masks = []
 
 		for m in mask:
 			# match mask resolution to image if they differ
@@ -60,14 +61,15 @@ class MaskCropCenterFill(TiNode):
 			ys, xs = torch.where(m > threshold)
 			if ys.numel() == 0:
 				out.append(torch.zeros(size, size, C))
+				out_masks.append(torch.zeros(size, size))
 				continue
 
 			y0, y1 = int(ys.min()), int(ys.max()) + 1
 			x0, x1 = int(xs.min()), int(xs.max()) + 1
 			crop = img[y0:y1, x0:x1, :].clone()             # [h,w,C]
-			mc = m[y0:y1, x0:x1].clamp(0, 1).unsqueeze(-1)  # [h,w,1]
+			mc = m[y0:y1, x0:x1].clamp(0, 1)                # [h,w]
 			if apply_mask:
-				crop = crop * mc                            # outside subject -> black
+				crop = crop * mc.unsqueeze(-1)              # outside subject -> black
 
 			h, w = crop.shape[0], crop.shape[1]
 			scale = inner / max(h, w)                       # fit longest side, keep aspect
@@ -77,9 +79,16 @@ class MaskCropCenterFill(TiNode):
 			crop = F.interpolate(crop, size=(nh, nw), mode="bilinear", align_corners=False)
 			crop = crop[0].permute(1, 2, 0)                 # [nh,nw,C]
 
+			# warp the mask through the SAME crop->resize->center transform
+			mr = F.interpolate(mc[None, None], size=(nh, nw),
+							   mode="bilinear", align_corners=False)[0, 0]  # [nh,nw]
+
 			canvas = torch.zeros(size, size, C)
+			mcanvas = torch.zeros(size, size)
 			oy, ox = (size - nh) // 2, (size - nw) // 2
 			canvas[oy:oy + nh, ox:ox + nw, :] = crop
+			mcanvas[oy:oy + nh, ox:ox + nw] = mr
 			out.append(canvas)
+			out_masks.append(mcanvas)
 
-		return (torch.stack(out, 0),)
+		return (torch.stack(out, 0), torch.stack(out_masks, 0))
