@@ -42,11 +42,31 @@ class MaskCropCenterFill(TiNode):
 	RETURN_NAMES = ("images", "masks", "crop_info")
 	FUNCTION = "execute"
 
-	def execute(self, image, mask, size, padding, apply_mask=True, threshold=0.5):
-		if mask.dim() == 2:
-			mask = mask.unsqueeze(0)
+	# Consume the whole mask set in one call. A LIST source (SEGSToMaskList)
+	# would otherwise run this once per face -> a separate 1-item crop_info per
+	# face instead of one crop_info with N items. With this, collapse the mask
+	# list to one [N,H,W] batch and emit a single aligned set.
+	INPUT_IS_LIST = True
 
-		img = image[0]                       # [H,W,C] — first source image
+	@staticmethod
+	def _first(v, default=None):
+		if isinstance(v, list):
+			return v[0] if v else default
+		return v
+
+	def execute(self, image, mask, size, padding, apply_mask=True, threshold=0.5):
+		img = self._first(image)             # source image
+		if img.dim() == 4:
+			img = img[0]                     # [H,W,C]
+		mlist = mask if isinstance(mask, list) else [mask]
+		mask = torch.cat(
+			[m if m.dim() == 3 else m.unsqueeze(0) for m in mlist], dim=0
+		)
+		size = int(self._first(size, 512))
+		padding = int(self._first(padding, 32))
+		apply_mask = bool(self._first(apply_mask, True))
+		threshold = float(self._first(threshold, 0.5))
+
 		H, W, C = img.shape
 		inner = max(1, size - 2 * padding)
 		out = []
