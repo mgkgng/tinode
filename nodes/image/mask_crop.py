@@ -38,8 +38,8 @@ class MaskCropCenterFill(TiNode):
 			},
 		}
 
-	RETURN_TYPES = ("IMAGE", "MASK")
-	RETURN_NAMES = ("images", "masks")
+	RETURN_TYPES = ("IMAGE", "MASK", "TI_CROP_XFORM")
+	RETURN_NAMES = ("images", "masks", "crop_info")
 	FUNCTION = "execute"
 
 	def execute(self, image, mask, size, padding, apply_mask=True, threshold=0.5):
@@ -51,6 +51,9 @@ class MaskCropCenterFill(TiNode):
 		inner = max(1, size - 2 * padding)
 		out = []
 		out_masks = []
+		# Per-face transform so the crop can be pasted back later. None where
+		# the mask was empty (no face), keeping index alignment with the batch.
+		items = []
 
 		for m in mask:
 			# match mask resolution to image if they differ
@@ -62,6 +65,7 @@ class MaskCropCenterFill(TiNode):
 			if ys.numel() == 0:
 				out.append(torch.zeros(size, size, C))
 				out_masks.append(torch.zeros(size, size))
+				items.append(None)
 				continue
 
 			y0, y1 = int(ys.min()), int(ys.max()) + 1
@@ -90,5 +94,10 @@ class MaskCropCenterFill(TiNode):
 			mcanvas[oy:oy + nh, ox:ox + nw] = mr
 			out.append(canvas)
 			out_masks.append(mcanvas)
+			items.append({
+				"y0": y0, "x0": x0, "h": h, "w": w,
+				"oy": oy, "ox": ox, "nh": nh, "nw": nw,
+			})
 
-		return (torch.stack(out, 0), torch.stack(out_masks, 0))
+		crop_info = {"H": H, "W": W, "C": C, "size": size, "items": items}
+		return (torch.stack(out, 0), torch.stack(out_masks, 0), crop_info)
