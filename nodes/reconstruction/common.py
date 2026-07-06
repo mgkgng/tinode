@@ -8,6 +8,7 @@ and keep every artifact inside a dataset directory created by tinode.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -43,15 +44,28 @@ def command_prefix(spec: str) -> list[str]:
 	return parts
 
 
-def run_logged(command: list[str], log_path: Path, cwd: Path | None = None) -> str:
+def run_logged(
+	command: list[str],
+	log_path: Path,
+	cwd: Path | None = None,
+	*,
+	env: dict[str, str] | None = None,
+	unset_env: tuple[str, ...] = (),
+) -> str:
 	"""Run a command, stream merged output, and raise with a useful tail."""
 	log_path.parent.mkdir(parents=True, exist_ok=True)
 	print(f"[tinode/reconstruction] $ {shlex.join(command)}", flush=True)
+	process_env = os.environ.copy()
+	for name in unset_env:
+		process_env.pop(name, None)
+	if env:
+		process_env.update(env)
 	tail: deque[str] = deque(maxlen=40)
 	with log_path.open("w", encoding="utf-8") as log:
 		process = subprocess.Popen(
 			command,
 			cwd=str(cwd) if cwd else None,
+			env=process_env,
 			stdout=subprocess.PIPE,
 			stderr=subprocess.STDOUT,
 			text=True,

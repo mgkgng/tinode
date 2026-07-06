@@ -34,13 +34,24 @@ ComfyUI/output/tinode/reconstruction/<dataset_name>/
 ```
 
 Directories are never silently overwritten. Change `dataset_name` to start a
-new run.
+new run. With `reuse_existing` enabled, a matching exported dataset is loaded
+again after a ComfyUI restart. Tinode validates frame count, resolution, mask
+mode, threshold, and dilation before reusing it.
 
 ### Run Masked COLMAP SfM
 
 Runs feature extraction, matching, and mapping. `sequential` is appropriate for
 ordered video frames; `exhaustive` is useful for smaller unordered image sets.
 The camera is shared by default because frames normally come from one clip.
+
+COLMAP is launched in a clean headless Qt environment so OpenCV plugins loaded
+by ComfyUI cannot hijack its platform plugin. `compute_device` defaults to
+`CPU`, which works with distro-provided COLMAP packages. Select `GPU` only for
+a COLMAP build compiled with CUDA support. Tinode passes the corresponding
+SIFT extraction and matching flags explicitly.
+
+When `restart_incomplete` is enabled, a failed `colmap/` directory is preserved
+as `colmap.failed-<timestamp>/` and the node starts cleanly on the next run.
 
 `colmap_command` can be a direct executable or a safely parsed prefix:
 
@@ -97,6 +108,19 @@ python -m pip install nerfstudio
 
 Then enter commands such as `conda run -n reconstruction ns-process-data` in
 the corresponding node fields, or enter absolute executable paths.
+
+On a Debian/Ubuntu machine (including a typical RunPod), the included setup
+script installs packaged CPU COLMAP and puts Nerfstudio in an isolated venv:
+
+```bash
+./scripts/setup-reconstruction.sh
+```
+
+Use `--colmap-only` when Nerfstudio is already installed elsewhere, or
+`--venv /custom/path` to choose the isolated environment location.
+
+No `/usr/local/bin/colmap` wrapper is required; headless and CPU/GPU behavior
+is owned by the Tinode node.
 
 ## Current boundary
 

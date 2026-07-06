@@ -11,7 +11,7 @@ from PIL import Image
 
 from ...base import TiNode
 from ...registry import register
-from .common import safe_name, write_json
+from .common import read_json, safe_name, write_json
 
 
 def _as_image_batch(images) -> torch.Tensor:
@@ -34,6 +34,18 @@ def _save_mask(path: Path, mask: torch.Tensor) -> None:
 	Image.fromarray(array, mode="L").save(path)
 
 
+def _load_mask_batch(directory: Path, filenames: list[str]) -> torch.Tensor:
+	masks = []
+	for filename in filenames:
+		path = directory / filename
+		if not path.is_file():
+			raise RuntimeError(f"Existing reconstruction mask is missing: {path}")
+		with Image.open(path) as image:
+			array = np.asarray(image.convert("L"), dtype=np.float32) / 255.0
+		masks.append(torch.from_numpy(array))
+	return torch.stack(masks)
+
+
 @register
 class ExportReconstructionDataset(TiNode):
 	"""Persist IMAGE/MASK batches with conventions required by SfM and 3DGS."""
@@ -54,6 +66,9 @@ class ExportReconstructionDataset(TiNode):
 				"mask_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
 				"dilate_pixels": ("INT", {"default": 8, "min": 0, "max": 128, "step": 1}),
 			},
+			"optional": {
+				"reuse_existing": ("BOOLEAN", {"default": True}),
+			},
 		}
 
 	RETURN_TYPES = ("TI_RECON_DATASET", "STRING", "MASK")
@@ -73,6 +88,7 @@ class ExportReconstructionDataset(TiNode):
 		mask_mode="white_is_dynamic",
 		mask_threshold=0.5,
 		dilate_pixels=8,
+		reuse_existing=True,
 	):
 		import folder_paths
 
@@ -93,13 +109,47 @@ class ExportReconstructionDataset(TiNode):
 		mode = str(self._first(mask_mode, "white_is_dynamic"))
 		threshold = float(self._first(mask_threshold, 0.5))
 		dilate = int(self._first(dilate_pixels, 9))
+		reuse = bool(self._first(reuse_existing, True))
 		root = Path(folder_paths.get_output_directory()).resolve() / "tinode" / "reconstruction" / name
 		manifest_path = root / "manifest.json"
 		if root.exists() and any(root.iterdir()):
-			raise RuntimeError(
-				f"Dataset directory already exists and is not empty: {root}\n"
-				"Choose another dataset_name to avoid overwriting artifacts."
-			)
+			if not reuse or not manifest_path.is_file():
+				raise RuntimeError(
+					f"Dataset directory already exists and is not reusable: {root}\n"
+					"Enable reuse_existing or choose another dataset_name."
+				)
+			manifest = read_json(manifest_path)
+			expected = {
+				"frame_count": int(image_batch.shape[0]),
+				"width": int(image_batch.shape[2]),
+				"height": int(image_batch.shape[1]),
+				"mask_mode_input": mode,
+				"mask_threshold": threshold,
+				"dilate_pixels": dilate,
+			}
+			mismatches = [
+				f"{key}: stored={manifest.get(key)!r}, requested={value!r}"
+				for key, value in expected.items()
+				if manifest.get(key) != value
+			]
+			if mismatches:
+				raise RuntimeError(
+					f"Existing dataset settings do not match: {root}\n"
+					+ "\n".join(mismatches)
+					+ "\nChoose another dataset_name to create a new dataset."
+				)
+			frames = manifest.get("frames", [])
+			keep_dir = root / "masks_keep"
+			keep = _load_mask_batch(keep_dir, frames)
+			dataset = {
+				"root": str(root),
+				"images": str(root / "images"),
+				"masks_dynamic": str(root / "masks_dynamic"),
+				"masks_keep": str(keep_dir),
+				"masks_colmap": str(root / "masks_colmap"),
+				"manifest": str(manifest_path),
+			}
+			return (dataset, str(root), keep)
 
 		images_dir = root / "images"
 		dynamic_dir = root / "masks_dynamic"
