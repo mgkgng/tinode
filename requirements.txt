@@ -8,3 +8,7 @@ onnxruntime
 
 # Face Landmark Morph — 468-point face mesh for feature-aware warping.
 mediapipe
+
+# Mask Clean Islands needs cv2 (connected components). Not pinned here: it
+# arrives with insightface, and naming a variant (opencv-python vs -headless
+# vs -contrib) can clobber the one ComfyUI already has.

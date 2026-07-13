@@ -9,6 +9,10 @@ written, edges feathered.
 Crops must stay index-aligned with crop_info (same order/count as the Mask
 Crop output) — don't reorder between crop and paste. Faces whose mask was
 empty (None transform) are skipped.
+
+A single source image takes every crop composited onto it (N faces -> one
+photo). A source batch of the same length as the crops is paired frame to
+frame instead (N video frames -> N crops), which is what Mask Bbox Crop emits.
 """
 
 from __future__ import annotations
@@ -51,9 +55,10 @@ class MaskCropPasteBack(TiNode):
 	FUNCTION = "execute"
 
 	def execute(self, image, crops, crop_info, masks=None, feather=0):
-		src = _first(image)                  # [1,H,W,C] or [H,W,C]
-		if src.dim() == 4:
-			src = src[0]
+		ilist = image if isinstance(image, list) else [image]
+		src = torch.cat(
+			[s if s.dim() == 4 else s.unsqueeze(0) for s in ilist], dim=0
+		)                                    # [S,H,W,C]
 		info = _first(crop_info)
 		feather = int(_first(feather, 0))
 
@@ -75,10 +80,18 @@ class MaskCropPasteBack(TiNode):
 		items = info["items"]
 		n = min(len(items), crop_batch.shape[0])
 
+		S = out.shape[0]
+		if S != 1 and S != n:
+			raise RuntimeError(
+				f"Cannot paste {n} crop(s) into a {S}-frame source: pass a single "
+				f"source image, or one source frame per crop."
+			)
+
 		for i in range(n):
 			it = items[i]
 			if it is None:
 				continue
+			f = 0 if S == 1 else i          # every crop onto one photo, or frame-paired
 			y0, x0, h, w = it["y0"], it["x0"], it["h"], it["w"]
 			oy, ox, nh, nw = it["oy"], it["ox"], it["nh"], it["nw"]
 
@@ -102,7 +115,7 @@ class MaskCropPasteBack(TiNode):
 								  padding=feather)[0, 0]
 
 			a = mr.clamp(0, 1).unsqueeze(-1)                       # [h,w,1]
-			dst = out[y0:y0 + h, x0:x0 + w, :]
-			out[y0:y0 + h, x0:x0 + w, :] = dst * (1 - a) + region * a
+			dst = out[f, y0:y0 + h, x0:x0 + w, :]
+			out[f, y0:y0 + h, x0:x0 + w, :] = dst * (1 - a) + region * a
 
-		return (out[None],)
+		return (out,)
