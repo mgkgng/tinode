@@ -17,7 +17,7 @@ import { api } from "../../scripts/api.js";
 
 const NODE_TYPE = "TI_PickSegments";
 const MIN_NODE_W = 360;
-const MIN_NODE_H = 520;
+const MIN_NODE_H = 320;
 
 // Must match color_for_id() in pick_segments.py so a segment is the same color
 // in the editor and in the rendered image output.
@@ -57,11 +57,14 @@ function setFrameWidget(node, f) {
 }
 
 function urlFor(info) {
+	// Cache-buster keyed on subfolder+filename: the subfolder now encodes the
+	// source-image hash, so this changes whenever the image changes and the
+	// browser refetches instead of serving a stale cached frame.
 	return api.apiURL(
 		`/view?filename=${encodeURIComponent(info.filename)}` +
 		`&type=${info.type || "temp"}` +
 		`&subfolder=${encodeURIComponent(info.subfolder || "")}` +
-		`&rand=${encodeURIComponent(info.filename)}`,
+		`&rand=${encodeURIComponent((info.subfolder || "") + "/" + info.filename)}`,
 	);
 }
 
@@ -342,11 +345,30 @@ function setup(node) {
 	requestAnimationFrame(() => draw(node));
 }
 
+// Size the node so the canvas matches the frame's aspect ratio — the image
+// then fills the width instead of sitting in a small letterboxed strip.
+function fitNodeToAspect(node) {
+	const tps = node._tps;
+	if (!tps.manifest || !tps.natW || !tps.natH) return;
+	const barH = tps.bar.offsetHeight || 32;
+	const width = Math.max(node.size[0], MIN_NODE_W);
+	const canvasW = width - 20;                       // wrap/border slack
+	const canvasH = clamp(canvasW * (tps.natH / tps.natW), 200, 760);
+	node.setSize([width, Math.round(barH + canvasH + 20)]);
+	node.setDirtyCanvas?.(true, true);
+	requestAnimationFrame(() => draw(node));
+}
+
 function applyManifest(node, manifest) {
 	const tps = node._tps;
 	tps.manifest = manifest;
 	tps.frames = [];
+	// Authoritative coordinate space for boxes/label — set NOW so the first
+	// paint doesn't use the 512² default before the label image loads.
+	tps.natW = manifest.pw || tps.natW;
+	tps.natH = manifest.ph || tps.natH;
 	tps.slider.max = String(Math.max(0, manifest.num_frames - 1));
+	fitNodeToAspect(node);
 	const start = clamp(getWidget(node, "current_frame")?.value ?? 0, 0, manifest.num_frames - 1);
 	loadFrame(node, start);
 }

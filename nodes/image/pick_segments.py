@@ -63,6 +63,23 @@ def _seg_signature(seg_data) -> str:
 	return hashlib.md5("|".join(parts).encode()).hexdigest()[:16]
 
 
+def _img_signature(imgs) -> str:
+	"""Cheap content hash of the source frames.
+
+	The preview cache MUST invalidate when the *image* input changes even if the
+	segments don't (e.g. rewiring image from the full frame to a crop): the seg
+	signature alone would collide and re-serve the previous image's frames.
+	Strided sampling keeps this fast on large batches.
+	"""
+	t = imgs.detach()
+	flat = t.reshape(-1)
+	step = max(1, flat.numel() // 8192)
+	h = hashlib.md5()
+	h.update(repr(tuple(t.shape)).encode())
+	h.update(flat[::step].contiguous().cpu().numpy().tobytes())
+	return h.hexdigest()[:16]
+
+
 @register
 class PickSegments(TiNode):
 	DISPLAY_NAME = "Pick Segments (ti)"
@@ -164,7 +181,10 @@ class PickSegments(TiNode):
 			scale = min(1.0, _PREVIEW_MAX_SIDE / max(H, W))
 			pw, ph = max(1, round(W * scale)), max(1, round(H * scale))
 
-			sig = _seg_signature(segments)
+			# Key on BOTH the segments and the source image so a changed image
+			# input (e.g. full frame -> crop) writes to a fresh folder instead
+			# of re-serving the previous run's stale frames.
+			sig = f"{_seg_signature(segments)}_{_img_signature(imgs)}"
 			root = os.path.join(folder_paths.get_temp_directory(), "ti_pick", sig)
 			os.makedirs(root, exist_ok=True)
 			subfolder = os.path.join("ti_pick", sig)
