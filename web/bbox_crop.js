@@ -14,7 +14,9 @@
 // handles mapped to full-resolution coordinates.
 
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import {
+	clamp, getWidget, pointerPos, releaseGraphPointer,
+} from "./lib/editor.js";
 
 const NODE_TYPE = "TI_BboxCropManual";
 const HANDLE_HIT = 12;   // px radius (canvas space) to grab a corner/edge
@@ -22,10 +24,6 @@ const HANDLE_VIS = 5;    // half-size of a drawn handle square
 const MIN_BOX = 1;       // smallest box in source pixels
 const MIN_NODE_W = 320;  // node minimum width  (leaves room for the canvas)
 const MIN_NODE_H = 440;  // node minimum height (fixed widgets + canvas)
-
-function getWidget(node, name) {
-	return node.widgets?.find((w) => w.name === name);
-}
 
 // Read the box from the four widgets, resolving the "0 = full extent" default
 // the backend uses so an unset box shows as the whole frame instead of empty.
@@ -63,10 +61,6 @@ function setWidget(node, name, value) {
 	if (!w || w.value === value) return;
 	w.value = value;
 	w.callback?.(value, app.canvas, node);
-}
-
-function clamp(v, lo, hi) {
-	return Math.max(lo, Math.min(v, hi));
 }
 
 // Fit the source frame into the canvas as a letterboxed rectangle, returning
@@ -252,16 +246,7 @@ function setupEditor(node) {
 	const ro = new ResizeObserver(() => draw(node));
 	ro.observe(container);
 
-	// ── pointer interaction ───────────────────────────────────────────────
-	// getBoundingClientRect() is SCREEN px (scaled by the LiteGraph zoom), but
-	// our canvas/viewRect math is in backing-store px (== clientWidth). Rescale
-	// screen -> backing store so hit-testing and cursor line up at ANY zoom.
-	const pos = (e) => {
-		const r = canvas.getBoundingClientRect();
-		const sx = canvas.width / (r.width || 1);
-		const sy = canvas.height / (r.height || 1);
-		return [(e.clientX - r.left) * sx, (e.clientY - r.top) * sy];
-	};
+	const pos = (e) => pointerPos(canvas, e);
 
 	const onMove = (e) => {
 		if (!node._ti.img) return;
@@ -283,12 +268,7 @@ function setupEditor(node) {
 		const [cx, cy] = pos(e);
 		const grip = hitTest(node, cx, cy);
 		if (!grip) return;            // let LiteGraph handle clicks outside the box
-		// Release any stale LiteGraph pointer-capture, else our pointermove never
-		// fires and the drag "sticks".
-		const lg = document.querySelector("canvas.litegraph, canvas.lgraphcanvas");
-		if (lg && typeof e.pointerId === "number") {
-			try { if (lg.hasPointerCapture(e.pointerId)) lg.releasePointerCapture(e.pointerId); } catch {}
-		}
+		releaseGraphPointer(e);
 		const b = readBox(node);
 		const [sx, sy] = toSource(node, cx, cy);
 		node._ti.drag = { grip, sx, sy, ox: b.x, oy: b.y };

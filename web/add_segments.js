@@ -10,7 +10,9 @@
 // each into a filled-rectangle segment and merges it into the outgoing stream.
 
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import {
+	colorForId, clamp, getWidget, urlFor, pointerPos, releaseGraphPointer,
+} from "./lib/editor.js";
 
 const NODE_TYPE = "TI_AddSegments";
 const MIN_NODE_W = 360;
@@ -18,29 +20,6 @@ const MIN_NODE_H = 320;
 const MANUAL_ID_BASE = 1000000;
 const MIN_DRAW = 5;                 // ignore accidental micro-drags (canvas px)
 const MANUAL_RGB = [255, 220, 0];   // manual boxes: bright yellow
-
-function colorForId(id) {
-	const h = ((id * 0.61803398875) % 1.0 + 1.0) % 1.0;
-	const s = 0.65, v = 1.0;
-	const i = Math.floor(h * 6);
-	const f = h * 6 - i;
-	const p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f));
-	const [r, g, b] = [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]][i % 6];
-	return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-}
-
-function getWidget(node, name) { return node.widgets?.find((w) => w.name === name); }
-
-// Boxes are stored as {sig, items} — sig identifies the image+segments they were
-// drawn against, so a new input can drop them instead of re-applying them.
-function readManualObj(node) {
-	try {
-		const v = JSON.parse(getWidget(node, "manual_segments")?.value || "{}");
-		if (Array.isArray(v)) return { sig: null, items: v };   // legacy bare list
-		if (!v || typeof v !== "object") return { sig: null, items: [] };
-		return { sig: v.sig ?? null, items: Array.isArray(v.items) ? v.items : [] };
-	} catch { return { sig: null, items: [] }; }
-}
 function readManual(node) { return readManualObj(node).items; }
 
 function writeManual(node, arr) {
@@ -57,17 +36,6 @@ function setFrameWidget(node, f) {
 	const w = getWidget(node, "current_frame");
 	if (w && w.value !== f) { w.value = f; w.callback?.(f, app.canvas, node); }
 }
-
-function urlFor(info) {
-	return api.apiURL(
-		`/view?filename=${encodeURIComponent(info.filename)}` +
-		`&type=${info.type || "temp"}` +
-		`&subfolder=${encodeURIComponent(info.subfolder || "")}` +
-		`&rand=${encodeURIComponent((info.subfolder || "") + "/" + info.filename)}`,
-	);
-}
-
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(v, hi)); }
 
 function viewRect(tas) {
 	const cw = tas.canvas.width, ch = tas.canvas.height;
@@ -256,19 +224,12 @@ function setup(node) {
 		else if (e.key === "ArrowRight") { loadFrame(node, node._tas.frameIdx + 1); e.stopPropagation(); e.preventDefault(); }
 	});
 
-	const pos = (e) => {
-		const r = canvas.getBoundingClientRect();
-		return [(e.clientX - r.left) * (canvas.width / (r.width || 1)),
-				(e.clientY - r.top) * (canvas.height / (r.height || 1))];
-	};
+	const pos = (e) => pointerPos(canvas, e);
 
 	// Left-drag = create a box.
 	canvas.addEventListener("pointerdown", (e) => {
 		if (!node._tas.manifest || e.button !== 0) return;
-		const lg = document.querySelector("canvas.litegraph, canvas.lgraphcanvas");
-		if (lg && typeof e.pointerId === "number") {
-			try { if (lg.hasPointerCapture(e.pointerId)) lg.releasePointerCapture(e.pointerId); } catch {}
-		}
+		releaseGraphPointer(e);
 		const [cx, cy] = pos(e);
 		node._tas.creating = { x0: cx, y0: cy, x1: cx, y1: cy };
 		canvas.setPointerCapture?.(e.pointerId);

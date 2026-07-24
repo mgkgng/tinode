@@ -13,28 +13,13 @@
 // back to the smallest box containing the point.
 
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import {
+	colorForId, clamp, getWidget, urlFor, pointerPos, releaseGraphPointer,
+} from "./lib/editor.js";
 
 const NODE_TYPE = "TI_PickSegments";
 const MIN_NODE_W = 360;
 const MIN_NODE_H = 320;
-
-// Must match color_for_id() in pick_segments.py so a segment is the same color
-// in the editor and in the rendered image output.
-function colorForId(id) {
-	const h = ((id * 0.61803398875) % 1.0 + 1.0) % 1.0;
-	const s = 0.65, v = 1.0;
-	const i = Math.floor(h * 6);
-	const f = h * 6 - i;
-	const p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f));
-	const table = [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]];
-	const [r, g, b] = table[i % 6];
-	return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-}
-
-function getWidget(node, name) {
-	return node.widgets?.find((w) => w.name === name);
-}
 
 // Stored as {sig, ids} — sig identifies the image+segments the selection was
 // made against, so a new input drops it instead of silently re-excluding ids
@@ -62,20 +47,6 @@ function setFrameWidget(node, f) {
 	const w = getWidget(node, "current_frame");
 	if (w && w.value !== f) { w.value = f; w.callback?.(f, app.canvas, node); }
 }
-
-function urlFor(info) {
-	// Cache-buster keyed on subfolder+filename: the subfolder now encodes the
-	// source-image hash, so this changes whenever the image changes and the
-	// browser refetches instead of serving a stale cached frame.
-	return api.apiURL(
-		`/view?filename=${encodeURIComponent(info.filename)}` +
-		`&type=${info.type || "temp"}` +
-		`&subfolder=${encodeURIComponent(info.subfolder || "")}` +
-		`&rand=${encodeURIComponent((info.subfolder || "") + "/" + info.filename)}`,
-	);
-}
-
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(v, hi)); }
 
 // Fit the frame (natW x natH) into the canvas, letterboxed.
 function viewRect(tps) {
@@ -287,14 +258,7 @@ function setup(node) {
 		else if (e.key === "ArrowRight") { loadFrame(node, node._tps.frameIdx + 1); e.stopPropagation(); e.preventDefault(); }
 	});
 
-	// ── pointer on the canvas ──
-	const pos = (e) => {
-		const r = canvas.getBoundingClientRect();
-		return [
-			(e.clientX - r.left) * (canvas.width / (r.width || 1)),
-			(e.clientY - r.top) * (canvas.height / (r.height || 1)),
-		];
-	};
+	const pos = (e) => pointerPos(canvas, e);
 
 	// Smallest box containing a point — the background-click fallback.
 	const boxAt = (node2, cx, cy) => {
@@ -334,6 +298,7 @@ function setup(node) {
 	});
 	canvas.addEventListener("pointerdown", (e) => {
 		if (!node._tps.manifest || e.button !== 0) return;
+		releaseGraphPointer(e);
 		const [cx, cy] = pos(e);
 		const idx = segIdxAt(node, cx, cy);
 		if (idx < 0) return;
