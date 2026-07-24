@@ -146,6 +146,26 @@ class PickSegments(TiNode):
 	RETURN_NAMES = ("mask", "image", "segments")
 	FUNCTION = "execute"
 
+	@staticmethod
+	def _excluded_ids(raw, sig):
+		"""Decode the exclusion widget, ignoring a selection made against other input.
+
+		Accepts the current {"sig","ids"} form and the older bare-list form (which
+		carries no signature, so it is trusted as-is).
+		"""
+		try:
+			data = json.loads(raw) if raw else []
+		except (ValueError, TypeError):
+			return set()
+		if isinstance(data, list):
+			return set(data)
+		if not isinstance(data, dict):
+			return set()
+		if data.get("sig") is not None and data.get("sig") != sig:
+			return set()          # input changed -> previous selection is stale
+		ids = data.get("ids")
+		return set(ids) if isinstance(ids, list) else set()
+
 	def execute(self, image, segments, excluded_ids="[]", current_frame=0, overlay_alpha=0.5):
 		validate_segments(segments)
 		imgs = image if image.dim() == 4 else image.unsqueeze(0)  # [N,H,W,3]
@@ -154,10 +174,11 @@ class PickSegments(TiNode):
 		frames = segments.get("frames", [])
 		N = int(segments.get("num_frames", len(frames)))
 
-		try:
-			excluded = set(json.loads(excluded_ids)) if excluded_ids else set()
-		except (ValueError, TypeError):
-			excluded = set()
+		# Identity of this input. Exclusions are SAM3 track ids, which are reused
+		# across clips — so a selection made against different input is stale and
+		# must not silently drop objects in the new one.
+		sig = f"{_seg_signature(segments)}_{_img_signature(imgs)}"
+		excluded = self._excluded_ids(excluded_ids, sig)
 
 		def included(frame):
 			return [s for s in frame if s["id"] not in excluded]
@@ -196,13 +217,13 @@ class PickSegments(TiNode):
 		}
 		result = (mask_out, image_out, filtered)
 
-		manifest = self._build_assets(imgs, segments)
+		manifest = self._build_assets(imgs, segments, sig)
 		if manifest is None:
 			return result
 		return {"ui": {"ti_pick": [manifest]}, "result": result}
 
 	# ------------------------------------------------------------------ assets
-	def _build_assets(self, imgs, segments):
+	def _build_assets(self, imgs, segments, sig):
 		"""Save per-frame source + label images and return the editor manifest.
 
 		Returns None (no editor) on any failure so the outputs still flow.
@@ -223,7 +244,6 @@ class PickSegments(TiNode):
 			# Key on BOTH the segments and the source image so a changed image
 			# input (e.g. full frame -> crop) writes to a fresh folder instead
 			# of re-serving the previous run's stale frames.
-			sig = f"{_seg_signature(segments)}_{_img_signature(imgs)}"
 			root = os.path.join(folder_paths.get_temp_directory(), "ti_pick", sig)
 			os.makedirs(root, exist_ok=True)
 			subfolder = os.path.join("ti_pick", sig)
@@ -271,7 +291,7 @@ class PickSegments(TiNode):
 				})
 
 			return {
-				"num_frames": N, "pw": pw, "ph": ph, "full_w": W, "full_h": H,
+				"sig": sig, "num_frames": N, "pw": pw, "ph": ph, "full_w": W, "full_h": H,
 				"ids": segments.get("ids", []), "frames": manifest_frames,
 			}
 		except Exception as exc:  # noqa: BLE001 — editor is best-effort

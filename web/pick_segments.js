@@ -36,18 +36,25 @@ function getWidget(node, name) {
 	return node.widgets?.find((w) => w.name === name);
 }
 
-function readExcluded(node) {
+// Stored as {sig, ids} — sig identifies the image+segments the selection was
+// made against, so a new input drops it instead of silently re-excluding ids
+// that mean a different object in the new clip.
+function readExcludedObj(node) {
 	try {
-		return new Set(JSON.parse(getWidget(node, "excluded_ids")?.value || "[]"));
-	} catch {
-		return new Set();
-	}
+		const v = JSON.parse(getWidget(node, "excluded_ids")?.value || "[]");
+		if (Array.isArray(v)) return { sig: null, ids: v };      // legacy bare list
+		if (!v || typeof v !== "object") return { sig: null, ids: [] };
+		return { sig: v.sig ?? null, ids: Array.isArray(v.ids) ? v.ids : [] };
+	} catch { return { sig: null, ids: [] }; }
 }
+
+function readExcluded(node) { return new Set(readExcludedObj(node).ids); }
 
 function writeExcluded(node, set) {
 	const w = getWidget(node, "excluded_ids");
 	if (!w) return;
-	w.value = JSON.stringify([...set]);
+	const sig = node._tps?.manifest?.sig ?? readExcludedObj(node).sig ?? null;
+	w.value = JSON.stringify({ sig, ids: [...set] });
 	w.callback?.(w.value, app.canvas, node);
 }
 
@@ -361,15 +368,29 @@ function fitNodeToAspect(node) {
 
 function applyManifest(node, manifest) {
 	const tps = node._tps;
+	// A different input invalidates the selection: track ids are reused across
+	// clips, so keeping it would drop unrelated objects in the new one.
+	const prev = readExcludedObj(node);
+	const isNewInput = prev.sig !== manifest.sig;
+
 	tps.manifest = manifest;
 	tps.frames = [];
+	if (isNewInput) {
+		writeExcluded(node, new Set());          // clears, stamped with the new sig
+		setFrameWidget(node, 0);
+		if (prev.ids.length) {
+			console.info(`[tinode] Pick Segments: new input — cleared ${prev.ids.length} exclusion(s).`);
+		}
+	}
 	// Authoritative coordinate space for boxes/label — set NOW so the first
 	// paint doesn't use the 512² default before the label image loads.
 	tps.natW = manifest.pw || tps.natW;
 	tps.natH = manifest.ph || tps.natH;
 	tps.slider.max = String(Math.max(0, manifest.num_frames - 1));
 	fitNodeToAspect(node);
-	const start = clamp(getWidget(node, "current_frame")?.value ?? 0, 0, manifest.num_frames - 1);
+	const start = isNewInput
+		? 0
+		: clamp(getWidget(node, "current_frame")?.value ?? 0, 0, manifest.num_frames - 1);
 	loadFrame(node, start);
 }
 
