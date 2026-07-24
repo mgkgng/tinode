@@ -29,6 +29,7 @@ import torch
 
 from ...base import TiNode
 from ...registry import register
+from ...schema import validate_segments
 
 _PREVIEW_MAX_SIDE = 768
 
@@ -109,6 +110,7 @@ class PickSegments(TiNode):
 	FUNCTION = "execute"
 
 	def execute(self, image, segments, excluded_ids="[]", current_frame=0, overlay_alpha=0.5):
+		validate_segments(segments)
 		imgs = image if image.dim() == 4 else image.unsqueeze(0)  # [N,H,W,3]
 		H = int(segments.get("height", imgs.shape[1]))
 		W = int(segments.get("width", imgs.shape[2]))

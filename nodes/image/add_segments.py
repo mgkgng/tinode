@@ -29,6 +29,7 @@ import torch
 
 from ...base import TiNode
 from ...registry import register
+from ...schema import validate_segments
 from .pick_segments import _PREVIEW_MAX_SIDE, _img_signature, _seg_signature, color_for_id
 
 # Manual ids start here so they never clash with SAM3 track ids.
@@ -87,6 +88,7 @@ class AddSegments(TiNode):
 
 	def execute(self, image, segments, manual_segments="{}", current_frame=0,
 				overlay_alpha=0.5):
+		validate_segments(segments)
 		imgs = image if image.dim() == 4 else image.unsqueeze(0)  # [N,H,W,3]
 		H = int(segments.get("height", imgs.shape[1]))
 		W = int(segments.get("width", imgs.shape[2]))
