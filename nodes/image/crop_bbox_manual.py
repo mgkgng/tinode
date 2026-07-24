@@ -45,10 +45,17 @@ _PREVIEW_MAX_SIDE = 768
 
 
 def _round_down(value: int, multiple: int) -> int:
-	"""Largest multiple of `multiple` <= value, but never below one multiple."""
+	"""Largest multiple of `multiple` <= value.
+
+	Never rounds UP past `value`: the caller has already clamped the box to the
+	frame, so returning a bigger multiple would push the crop off the edge and
+	slice an empty tensor. When the span is smaller than one multiple there is no
+	multiple to give, so keep the span as-is rather than emitting nothing.
+	"""
 	if multiple <= 1:
 		return value
-	return max(multiple, (value // multiple) * multiple)
+	down = (value // multiple) * multiple
+	return down if down > 0 else value
 
 
 def _save_preview(frame: torch.Tensor):
@@ -127,8 +134,11 @@ class BboxCropManual(TiNode):
 		N, H, W, C = imgs.shape
 
 		# Resolve the box in pixels. width/height of 0 -> run to the far edge.
-		x0 = max(0, min(int(x), W))
-		y0 = max(0, min(int(y), H))
+		# The origin is clamped to the LAST pixel, not past it: a box saved
+		# against a taller frame (or simply dragged off the edge) would otherwise
+		# start at y == H and slice an empty crop.
+		x0 = max(0, min(int(x), max(0, W - 1)))
+		y0 = max(0, min(int(y), max(0, H - 1)))
 		x1 = W if int(width) <= 0 else int(x0 + int(width))
 		y1 = H if int(height) <= 0 else int(y0 + int(height))
 

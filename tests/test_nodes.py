@@ -31,6 +31,7 @@ from tinode.base import first  # noqa: E402
 from tinode.nodes.image.batch_drop import parse_keep  # noqa: E402
 from tinode.nodes.image.batch_pick import parse_pick  # noqa: E402
 from tinode.nodes.image.bbox_crop import MaskBboxCrop  # noqa: E402
+from tinode.nodes.image.crop_bbox_manual import BboxCropManual  # noqa: E402
 from tinode.nodes.image.extend_video import ExtendVideo  # noqa: E402
 from tinode.nodes.image.insert_video import InsertVideo  # noqa: E402
 from tinode.nodes.image.trim_video import TrimVideo  # noqa: E402
@@ -133,6 +134,28 @@ def test_crop_respects_divisible_by():
 		shared_bbox=[True], smoothing=[1], threshold=[0.5])
 	it = info["items"][0]
 	assert it["h"] % 16 == 0 and it["w"] % 16 == 0, it
+
+
+def test_manual_crop_is_never_empty():
+	"""A box saved against a taller frame must not slice a zero-sized crop.
+
+	divisible_by used to round UP past the space left, so a y beyond the frame
+	produced an [N,0,W,C] tensor that broke everything downstream silently.
+	"""
+	node = BboxCropManual()
+	# y is past the bottom of a 1080-tall frame
+	crop, info = _unwrap(node.execute(torch.rand(3, 1080, 1920, 3),
+									  x=437, y=1309, width=1176, height=673, divisible_by=32))
+	assert crop.shape[1] > 0 and crop.shape[2] > 0, crop.shape
+	assert info["items"][0]["h"] == crop.shape[1]
+	# a normal box still honours divisible_by
+	crop, _ = _unwrap(node.execute(torch.rand(2, 1080, 1920, 3),
+								   x=100, y=100, width=640, height=384, divisible_by=32))
+	assert crop.shape[1] % 32 == 0 and crop.shape[2] % 32 == 0
+	# a box smaller than one multiple keeps what it has rather than nothing
+	crop, _ = _unwrap(node.execute(torch.rand(1, 64, 64, 3),
+								   x=0, y=0, width=10, height=10, divisible_by=32))
+	assert crop.shape[1:3] == (10, 10), crop.shape
 
 
 def test_paste_back_rejects_a_wrong_sized_source():

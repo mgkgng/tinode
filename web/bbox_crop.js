@@ -144,6 +144,14 @@ function draw(node) {
 	const h = Math.max(1, Math.floor(cv.clientHeight));
 	if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
 
+	// A zero-sized canvas draws nothing and looks identical to "the node is
+	// broken". Say so once, so it is obvious this is layout and not the preview.
+	if ((cv.clientWidth < 2 || cv.clientHeight < 2) && !ti._warnedSize) {
+		ti._warnedSize = true;
+		console.warn("[tinode] Bbox Crop: canvas has no size "
+			+ `(${cv.clientWidth}x${cv.clientHeight}) — the DOM widget got no space.`);
+	}
+
 	ctx.clearRect(0, 0, cv.width, cv.height);
 	ctx.fillStyle = "#181818";
 	ctx.fillRect(0, 0, cv.width, cv.height);
@@ -229,10 +237,15 @@ function canvasHeightFor(node) {
 
 function setupEditor(node) {
 	if (node._ti) return;
+	// Same layout as the two segment editors, which render reliably: a flex
+	// column with the canvas as a flex child. The previous absolute/inset:0
+	// canvas collapsed to zero height whenever the container's own height did
+	// not resolve. min-height is a floor so the canvas is never invisible.
 	const container = document.createElement("div");
-	container.style.cssText = "position:relative;width:100%;height:100%;box-sizing:border-box;";
+	container.style.cssText = "position:relative;width:100%;height:100%;min-height:260px;"
+		+ "display:flex;flex-direction:column;box-sizing:border-box;";
 	const canvas = document.createElement("canvas");
-	canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border-radius:4px;touch-action:none;display:block;";
+	canvas.style.cssText = "flex:1;min-height:200px;width:100%;border-radius:4px;touch-action:none;display:block;";
 	container.appendChild(canvas);
 
 	node._ti = {
