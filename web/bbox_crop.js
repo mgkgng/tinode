@@ -236,10 +236,13 @@ function setupEditor(node) {
 
 	// Enforce a roomy minimum so there is space for the canvas, and grow the
 	// node to it on creation.
-	const prevComputeSize = node.computeSize;
+	// LiteGraph calls computeSize() on move and redraw, and the default
+	// implementation derives the height from the WIDGETS alone — which collapses
+	// the canvas every time you drag the node. Report the CURRENT size instead
+	// (floored at the minimum), so computeSize can only keep or grow, never shrink.
 	node.computeSize = function () {
-		const base = prevComputeSize ? prevComputeSize.apply(this, arguments) : [MIN_NODE_W, MIN_NODE_H];
-		return [Math.max(base[0], MIN_NODE_W), Math.max(base[1], MIN_NODE_H)];
+		const cur = this.size || [MIN_NODE_W, MIN_NODE_H];
+		return [Math.max(cur[0], MIN_NODE_W), Math.max(cur[1], MIN_NODE_H)];
 	};
 
 	// Redraw whenever the container is resized (node resize, collapse, zoom).
