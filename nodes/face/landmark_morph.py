@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, first as _first
 from ...registry import register
 
 # mediapipe FaceMesh is heavy to construct; build once, reuse.
@@ -138,19 +138,14 @@ class FaceLandmarkMorph(TiNode):
 	RETURN_NAMES = ("frames",)
 	FUNCTION = "execute"
 
-	@staticmethod
-	def _first(v, default=None):
-		if isinstance(v, list):
-			return v[0] if v else default
-		return v
 
 	def execute(self, images, steps, loop=False):
 		imgs = images if isinstance(images, list) else [images]
 		batch = torch.cat(
 			[im if im.dim() == 4 else im.unsqueeze(0) for im in imgs], dim=0
 		)
-		steps = int(self._first(steps, 12))
-		loop = bool(self._first(loop, False))
+		steps = int(_first(steps, 12))
+		loop = bool(_first(loop, False))
 
 		n = batch.shape[0]
 		if n < 2:

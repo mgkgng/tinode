@@ -18,7 +18,7 @@ import shutil
 import numpy as np
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, first as _first
 from ...registry import register
 
 # Cache FaceAnalysis apps by (model, det_size) so we load ONNX once per config,
@@ -136,20 +136,15 @@ class FaceSimilaritySort(TiNode):
 	# run this once per frame -> n=1 -> nothing to sort. Collapse to one batch.
 	INPUT_IS_LIST = True
 
-	@staticmethod
-	def _first(v, default=None):
-		if isinstance(v, list):
-			return v[0] if v else default
-		return v
 
 	def execute(self, images, start_index, model="buffalo_l", det_size=640):
 		imgs = images if isinstance(images, list) else [images]
 		images = torch.cat(
 			[im if im.dim() == 4 else im.unsqueeze(0) for im in imgs], dim=0
 		)
-		start_index = int(self._first(start_index, 0))
-		model = self._first(model, "buffalo_l")
-		det_size = int(self._first(det_size, 640))
+		start_index = int(_first(start_index, 0))
+		model = _first(model, "buffalo_l")
+		det_size = int(_first(det_size, 640))
 
 		n = images.shape[0]
 		start_index = max(0, min(start_index, n - 1))

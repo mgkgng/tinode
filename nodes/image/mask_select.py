@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, first as _first
 from ...registry import register
 from .batch_drop import parse_keep
 from .batch_pick import parse_pick
@@ -23,10 +23,6 @@ def _collapse(masks):
 	return torch.cat(norm, dim=0)
 
 
-def _first(v, default=None):
-	if isinstance(v, list):
-		return v[0] if v else default
-	return v
 
 
 @register

@@ -35,14 +35,10 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from ...base import TiNode
+from ...base import TiNode, first as _first
 from ...registry import register
 
 
-def _first(v, default=None):
-	if isinstance(v, list):
-		return v[0] if v else default
-	return v
 
 
 def _round_up(value: int, multiple: int, limit: int) -> int:

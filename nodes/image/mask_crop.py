@@ -14,7 +14,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from ...base import TiNode
+from ...base import TiNode, first as _first
 from ...registry import register
 
 
@@ -48,24 +48,19 @@ class MaskCropCenterFill(TiNode):
 	# list to one [N,H,W] batch and emit a single aligned set.
 	INPUT_IS_LIST = True
 
-	@staticmethod
-	def _first(v, default=None):
-		if isinstance(v, list):
-			return v[0] if v else default
-		return v
 
 	def execute(self, image, mask, size, padding, apply_mask=True, threshold=0.5):
-		img = self._first(image)             # source image
+		img = _first(image)             # source image
 		if img.dim() == 4:
 			img = img[0]                     # [H,W,C]
 		mlist = mask if isinstance(mask, list) else [mask]
 		mask = torch.cat(
 			[m if m.dim() == 3 else m.unsqueeze(0) for m in mlist], dim=0
 		)
-		size = int(self._first(size, 512))
-		padding = int(self._first(padding, 32))
-		apply_mask = bool(self._first(apply_mask, True))
-		threshold = float(self._first(threshold, 0.5))
+		size = int(_first(size, 512))
+		padding = int(_first(padding, 32))
+		apply_mask = bool(_first(apply_mask, True))
+		threshold = float(_first(threshold, 0.5))
 
 		H, W, C = img.shape
 		inner = max(1, size - 2 * padding)

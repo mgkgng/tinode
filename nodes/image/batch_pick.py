@@ -18,7 +18,7 @@ import re
 
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, first as _first
 from ...registry import register
 
 _INT_TOKEN = re.compile(r"^[0-9]+$")
@@ -77,19 +77,14 @@ class BatchPickIndices(TiNode):
 	RETURN_NAMES = ("images",)
 	FUNCTION = "execute"
 
-	@staticmethod
-	def _first(v, default=None):
-		if isinstance(v, list):
-			return v[0] if v else default
-		return v
 
 	def execute(self, images, indices, one_based=True):
 		imgs = images if isinstance(images, list) else [images]
 		batch = torch.cat(
 			[im if im.dim() == 4 else im.unsqueeze(0) for im in imgs], dim=0
 		)
-		idx = self._first(indices, "")
-		ob = self._first(one_based, True)
+		idx = _first(indices, "")
+		ob = _first(one_based, True)
 
 		keep = parse_pick(idx, batch.shape[0], ob)
 		if keep is None:
