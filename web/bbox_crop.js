@@ -15,7 +15,7 @@
 
 import { app } from "../../scripts/app.js";
 import {
-	clamp, getWidget, pointerPos, releaseGraphPointer,
+	clamp, getWidget, pointerPos, releaseGraphPointer, urlFor,
 } from "./lib/editor.js";
 
 const NODE_TYPE = "TI_BboxCropManual";
@@ -206,12 +206,7 @@ function loadPreview(node, imageInfo, srcDims) {
 		ti.imgW = Math.max(1, Math.round(srcDims[0]));
 		ti.imgH = Math.max(1, Math.round(srcDims[1]));
 	}
-	const url = api.apiURL(
-		`/view?filename=${encodeURIComponent(imageInfo.filename)}` +
-		`&type=${imageInfo.type || "temp"}` +
-		`&subfolder=${encodeURIComponent(imageInfo.subfolder || "")}` +
-		`&rand=${imageInfo.filename}`,
-	);
+	const url = urlFor(imageInfo);
 	const img = new Image();
 	img.onload = () => {
 		ti.img = img;

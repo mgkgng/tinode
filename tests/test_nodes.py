@@ -382,6 +382,33 @@ def test_web_js_calls_are_all_defined():
 	assert not problems, "undefined helper(s):\n  " + "\n  ".join(problems)
 
 
+def test_web_js_imports_the_comfy_singletons_it_uses():
+	"""A module using `app.` / `api.` must import it.
+
+	The call-site check above only looks at bare calls, so `api.apiURL(...)`
+	slipped through when a refactor dropped the `api` import — the module still
+	parsed and only threw at runtime, leaving Bbox Crop stuck on its placeholder.
+	Full scope analysis is overkill; these two ComfyUI singletons are the ones
+	that actually get dropped.
+	"""
+	import re
+
+	web = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+	problems = []
+	for root, _dirs, files in os.walk(web):
+		for fname in sorted(f for f in files if f.endswith(".js")):
+			path = os.path.join(root, fname)
+			src = open(path).read()
+			body = re.sub(r"^import[\s\S]*?;\s*$", "", src, flags=re.M)  # drop import lines
+			for singleton in ("app", "api"):
+				uses = re.search(rf"(?<![.\w]){singleton}\.", body)
+				imported = re.search(rf"import\s*\{{[^}}]*\b{singleton}\b[^}}]*\}}\s*from", src)
+				if uses and not imported:
+					rel = os.path.relpath(path, web)
+					problems.append(f"{rel}: uses `{singleton}.` but never imports it")
+	assert not problems, "missing import(s):\n  " + "\n  ".join(problems)
+
+
 def test_color_for_id_is_stable_and_matches_js():
 	"""color_for_id is duplicated in web/lib/editor.js and MUST agree.
 
