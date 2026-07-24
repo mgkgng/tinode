@@ -32,6 +32,8 @@ from tinode.nodes.image.batch_drop import parse_keep  # noqa: E402
 from tinode.nodes.image.batch_pick import parse_pick  # noqa: E402
 from tinode.nodes.image.bbox_crop import MaskBboxCrop  # noqa: E402
 from tinode.nodes.image.extend_video import ExtendVideo  # noqa: E402
+from tinode.nodes.image.insert_video import InsertVideo  # noqa: E402
+from tinode.nodes.image.trim_video import TrimVideo  # noqa: E402
 from tinode.nodes.image.paste_back import MaskCropPasteBack  # noqa: E402
 from tinode.nodes.image.pick_segments import (  # noqa: E402
 	PickSegments, color_for_id, prune_asset_cache,
@@ -255,6 +257,55 @@ def test_extend_video_holds_and_splices():
 	# video mode with nothing wired is a no-op, not a crash
 	out, pre, _ = ExtendVideo().execute(base, prepend_mode="video")
 	assert out.shape[0] == 5 and pre == 0
+
+
+def test_insert_video_replace_and_insert():
+	base = torch.zeros(10, 8, 6, 3)
+	for i in range(10):
+		base[i] = i / 10.0
+	clip = torch.zeros(3, 8, 6, 3)
+	for i in range(3):
+		clip[i] = 0.5 + i / 100.0
+	tag = lambda v: [round(float(f[0, 0, 0]), 3) for f in v]  # noqa: E731
+
+	# replace: the clip's own length decides the end of the replaced span
+	out, s, e = InsertVideo().execute(base, clip, start_frame=4, mode="replace")
+	assert (s, e) == (4, 7) and out.shape[0] == 10
+	assert tag(out) == [0.0, 0.1, 0.2, 0.3, 0.5, 0.51, 0.52, 0.7, 0.8, 0.9]
+
+	# insert: nothing is lost, the clip pushes the rest later
+	out, s, e = InsertVideo().execute(base, clip, start_frame=4, mode="insert")
+	assert out.shape[0] == 13
+	assert tag(out) == [0.0, 0.1, 0.2, 0.3, 0.5, 0.51, 0.52, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+
+	# inserting past the end extends rather than dropping frames
+	out, s, _ = InsertVideo().execute(base, clip, start_frame=999, mode="replace")
+	assert out.shape[0] == 13 and s == 10
+	# a mismatched clip is conformed to the base
+	out, _, _ = InsertVideo().execute(base, torch.rand(2, 16, 12, 4), start_frame=0)
+	assert out.shape == (10, 8, 6, 3)
+
+
+def test_trim_video_cuts_both_ends():
+	base = torch.zeros(10, 8, 6, 3)
+	for i in range(10):
+		base[i] = i / 10.0
+	out, n = TrimVideo().execute(base, trim_start=2, trim_end=3)
+	assert n == 5 and torch.equal(out, base[2:7])       # exact original pixels
+	assert torch.equal(TrimVideo().execute(base, 0, 0)[0], base)
+	# never emit an empty batch
+	_, n = TrimVideo().execute(base, trim_start=50, trim_end=50)
+	assert n == 1
+
+
+def test_insert_then_trim_restores_the_base():
+	base = torch.zeros(10, 8, 6, 3)
+	for i in range(10):
+		base[i] = i / 10.0
+	clip = torch.rand(3, 8, 6, 3)
+	out, s, e = InsertVideo().execute(base, clip, start_frame=0, mode="insert")
+	back, _ = TrimVideo().execute(out, trim_start=e - s, trim_end=0)
+	assert torch.equal(back, base)
 
 
 def test_color_for_id_is_stable_and_matches_js():
