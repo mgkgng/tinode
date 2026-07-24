@@ -1,14 +1,22 @@
-# Python deps for the tinode pack. Keep empty until a node needs one.
-# ComfyUI Manager installs these on pack install.
-
-# Face Similarity Sort — ArcFace embeddings via InsightFace.
-# On the GPU server swap onnxruntime -> onnxruntime-gpu for CUDA.
-insightface
-onnxruntime
-
-# Face Landmark Morph — 468-point face mesh for feature-aware warping.
-mediapipe
-
-# Mask Clean Islands needs cv2 (connected components). Not pinned here: it
-# arrives with insightface, and naming a variant (opencv-python vs -headless
-# vs -contrib) can clobber the one ComfyUI already has.
+# Python deps for the tinode pack. ComfyUI Manager installs THIS file on pack
+# install, so it must stay limited to what the pack needs by default.
+#
+# Deliberately empty. The image / video / segment nodes — which is nearly all of
+# them — run on torch, numpy and Pillow, all of which ComfyUI already provides.
+#
+# Two things are intentionally NOT pinned here:
+#
+# 1. opencv (cv2), needed by Mask Clean Islands for connected components.
+#    Naming a variant (opencv-python vs -headless vs -contrib) can clobber the
+#    one another pack or the host already installed, which breaks more than it
+#    fixes. The node raises a clear "install opencv-python" error if it is
+#    missing, so this fails loudly rather than silently.
+#
+# 2. The face nodes' heavy extras (insightface, onnxruntime, mediapipe —
+#    hundreds of MB). Only 2 of the pack's nodes use them and both import
+#    lazily, so everything else loads and runs without them. Install them only
+#    if you want Face Similarity Sort / Face Landmark Morph:
+#
+#        pip install -r requirements-face.txt
+#
+# See README.md > Installation.

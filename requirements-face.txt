@@ -1,0 +1,13 @@
+# Optional extras for the tinode face nodes only.
+#     pip install -r requirements-face.txt
+#
+# Not in requirements.txt on purpose: these are hundreds of MB and only two
+# nodes need them. Both import lazily, so the rest of the pack works without.
+
+# Face Similarity Sort — ArcFace embeddings via InsightFace.
+# On a CUDA host swap onnxruntime -> onnxruntime-gpu.
+insightface
+onnxruntime
+
+# Face Landmark Morph — 468-point face mesh for feature-aware warping.
+mediapipe
