@@ -1,0 +1,168 @@
+# tinode
+
+Custom ComfyUI nodes for video retouching work — interactive cropping, mask
+curation, and picking your way through a SAM3 segmentation with 90 overlapping
+objects in it.
+
+Built around one idea: **a video is just an `[N,H,W,C]` IMAGE batch**, so a node
+that handles a batch correctly handles a clip correctly. Crops are taken at
+native scale (no resampling), so a crop → process → paste round trip leaves
+every untouched pixel bit-identical.
+
+---
+
+## Installation
+
+Clone into `ComfyUI/custom_nodes/` and restart:
+
+```bash
+git clone https://github.com/mgkgng/tinode ComfyUI/custom_nodes/tinode
+```
+
+The default install has **no dependencies** — the image, video and segment nodes
+run on the torch / numpy / Pillow that ComfyUI already provides.
+
+Two optional pieces:
+
+| What | When you need it |
+|---|---|
+| `opencv-python` | **Mask Clean Islands** only. Left unpinned deliberately: naming a variant (`-headless`, `-contrib`) can clobber one another pack installed. The node says so if it's missing. |
+| `pip install -r requirements-face.txt` | The two face nodes only (insightface / onnxruntime / mediapipe — hundreds of MB). Both import lazily, so everything else works without them. |
+
+After changing any `web/*.js`, **hard-refresh the browser** (Ctrl/Cmd-Shift-R).
+
+---
+
+## The interactive nodes
+
+Three nodes mount a canvas in the node body. They all follow the same two-pass
+rhythm, which is a consequence of how ComfyUI executes:
+
+> **Queue once** so the node produces the frames → **edit on the canvas** →
+> **queue again** to apply your edit.
+
+The frontend can't see an upstream image until the graph runs. The heavy node
+upstream (SAM3, a crop) is cached, so editing and re-queuing does **not**
+re-run it.
+
+### Bbox Crop · Manual
+Drag four corner handles (or an edge, or the whole box) over a preview of the
+incoming frame; `x / y / width / height` update live and are saved with the
+workflow. One box applies to every frame, so image → image and video → video.
+Emits `TI_CROP_XFORM` for the round trip back.
+
+### Pick Segments
+Feed it the `segments` output of a patched EasySAM3 Segment plus the original
+image. Scrub frames (slider, ◀ ▶, arrow keys); every detection is a colorized
+box; hovering lights up its real mask shape; **clicking the object toggles it**.
+Picking is pixel-accurate — a per-frame label map resolves the click to the
+exact object under the cursor even where dozens of boxes overlap.
+
+Selection is **per-id and global**: excluding an object drops it on every frame
+it appears in. Outputs the union `mask`, the `image` with the kept segments
+drawn, and the filtered `segments`.
+
+### Add Segments
+The complement: **drag a box to add** a region SAM3 missed on the current frame,
+**right-click a box you drew to remove it**. Boxes are per-frame. Same three
+outputs as Pick Segments, so the two are interchangeable and chain in either
+order.
+
+Both segment editors **reset when the input changes** — a selection or a drawn
+box is stamped with a signature of the image + segments it was made against, so
+it is never silently re-applied to a different clip.
+
+---
+
+## Node reference
+
+### `tinode/image` — crop & paste
+| Node | Does |
+|---|---|
+| **Mask Bbox Crop** | Crop to a mask's bounding box + padding, rounded to `divisible_by`. Per-frame boxes are temporally smoothed so the crop stops swimming; `shared_bbox` gives one static box instead. |
+| **Mask Crop · Center Fill** | Crop each mask onto its own square black canvas, scaled to fill — for crowd → per-face pipelines. |
+| **Bbox Crop · Manual** | Interactive crop (above). |
+| **Mask Crop Paste Back** | Composite processed crops back using `crop_info`. Blends through an optional mask, feathered. |
+
+> **The one rule for Paste Back:** its `image` must be the **original frame the
+> crop node consumed**, never the crop node's output. `crop_info` coordinates
+> live in that original frame. It now raises a readable error if they mismatch.
+
+### `tinode/image` — masks & batches
+| Node | Does |
+|---|---|
+| **Mask Clean Islands** | Delete speckle, fill pinholes via connected components. Never erodes/dilates, so the real boundary and its antialiasing survive exactly. |
+| **Mask Translate** | Shift a mask. |
+| **Batch Drop / Pick Indices** | Keep or remove frames by index list; Pick preserves order, so it doubles as a reorder. |
+| **Mask Drop / Pick Indices** | Same, for MASK batches. |
+| **Crop Info Drop / Pick Indices** | Same, for `TI_CROP_XFORM` — so images, masks and crop_info stay in lockstep. |
+
+Index lists are 1-based by default. Validation is strict: any malformed token
+makes the node a **no-op** rather than silently selecting the wrong frames.
+
+### `tinode/image` — video & segments
+| Node | Does |
+|---|---|
+| **Extend Video · Prepend/Append** | Add frames at either end: hold the first/last frame, or splice in another clip (auto-conformed to the base resolution/channels). Returns how many frames it added at each end so you can trim them later. |
+| **Pick Segments** / **Add Segments** | Interactive segment curation (above). |
+
+### `tinode/face`
+| Node | Does |
+|---|---|
+| **Face Similarity Sort** | Reorder a face batch into an identity gradient (ArcFace + greedy nearest-neighbour). |
+| **Face Landmark Morph** | Feature-aware warping from a 468-point face mesh. |
+
+### `tinode/conditioning`
+| Node | Does |
+|---|---|
+| **CLIP Text Encode (Override)** | Text-as-input CLIP encode. |
+
+---
+
+## Custom types
+
+Two data types travel between these nodes. ComfyUI only matches type *strings*
+between slots — it never checks the shape — so both contracts are written down
+in [`schema.py`](schema.py) with validators. Full field docs live there.
+
+- **`TI_CROP_XFORM`** — how to undo a crop: the original `H/W`, and one item per
+  crop (`y0,x0,h,w` in the original frame; `oy,ox,nh,nw` on the crop canvas).
+  `None` marks a frame with nothing to paste, preserving index alignment.
+- **`TI_SAM3_SEGMENTS`** — every SAM3 detection per frame, unmerged: `id`,
+  `bbox`, `conf`, and a **bbox-cropped** mask (full-frame masks for 90 objects
+  would not fit in memory). Ids are stable track ids, which is what makes an
+  id-based selection mean the same object across the whole clip.
+
+`TI_SAM3_SEGMENTS` requires a small patch to EasySAM3 Segment that adds a third
+output exposing the detections before it merges them — see
+[mgkgng/ComfyUI-EasySAM3](https://github.com/mgkgng/ComfyUI-EasySAM3).
+
+---
+
+## Development
+
+Nodes are auto-discovered: drop a file under `nodes/<group>/`, subclass
+`TiNode`, decorate with `@register`. `registry.py` walks the package, namespaces
+every id with `TI_` (node ids are **global** across all installed packs), raises
+on duplicates instead of silently shadowing, and isolates import errors so one
+broken node can't take down the pack.
+
+Shared frontend helpers live in [`web/lib/editor.js`](web/lib/editor.js) —
+notably the screen → canvas pointer rescale, without which every hit-test misses
+at any zoom other than 100%.
+
+Tests need torch, so run them with ComfyUI's interpreter:
+
+```bash
+ComfyUI/venv/bin/python tests/test_nodes.py   # standalone, no pytest needed
+pytest tests/                                 # also works
+```
+
+They cover the things that regress silently: crop/paste bit-exactness, the
+index parsers, the type contracts, stale-selection resets, cache pruning, and a
+check that the Python and JS colour functions still agree (it actually executes
+the JS).
+
+## License
+
+MIT.
