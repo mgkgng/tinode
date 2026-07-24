@@ -31,14 +31,23 @@ function colorForId(id) {
 
 function getWidget(node, name) { return node.widgets?.find((w) => w.name === name); }
 
-function readManual(node) {
-	try { return JSON.parse(getWidget(node, "manual_segments")?.value || "[]"); }
-	catch { return []; }
+// Boxes are stored as {sig, items} — sig identifies the image+segments they were
+// drawn against, so a new input can drop them instead of re-applying them.
+function readManualObj(node) {
+	try {
+		const v = JSON.parse(getWidget(node, "manual_segments")?.value || "{}");
+		if (Array.isArray(v)) return { sig: null, items: v };   // legacy bare list
+		if (!v || typeof v !== "object") return { sig: null, items: [] };
+		return { sig: v.sig ?? null, items: Array.isArray(v.items) ? v.items : [] };
+	} catch { return { sig: null, items: [] }; }
 }
+function readManual(node) { return readManualObj(node).items; }
+
 function writeManual(node, arr) {
 	const w = getWidget(node, "manual_segments");
 	if (!w) return;
-	w.value = JSON.stringify(arr);
+	const sig = node._tas?.manifest?.sig ?? readManualObj(node).sig ?? null;
+	w.value = JSON.stringify({ sig, items: arr });
 	w.callback?.(w.value, app.canvas, node);
 }
 function nextManualId(arr) {
@@ -320,6 +329,11 @@ function fitNodeToAspect(node) {
 
 function applyManifest(node, manifest) {
 	const tas = node._tas;
+	// A different input (image and/or segments) invalidates everything drawn
+	// against the old one — reset instead of stamping stale boxes onto a new clip.
+	const prev = readManualObj(node);
+	const isNewInput = prev.sig !== manifest.sig;
+
 	tas.manifest = manifest;
 	tas.frames = [];
 	tas.natW = manifest.pw || tas.natW;
@@ -327,8 +341,19 @@ function applyManifest(node, manifest) {
 	tas.fullW = manifest.full_w || tas.natW;
 	tas.fullH = manifest.full_h || tas.natH;
 	tas.slider.max = String(Math.max(0, manifest.num_frames - 1));
+
+	if (isNewInput) {
+		writeManual(node, []);                       // clears, stamped with the new sig
+		setFrameWidget(node, 0);
+		if (prev.items.length) {
+			console.info(`[tinode] Add Segments: new input — cleared ${prev.items.length} drawn box(es).`);
+		}
+	}
+
 	fitNodeToAspect(node);
-	const start = clamp(getWidget(node, "current_frame")?.value ?? 0, 0, manifest.num_frames - 1);
+	const start = isNewInput
+		? 0
+		: clamp(getWidget(node, "current_frame")?.value ?? 0, 0, manifest.num_frames - 1);
 	loadFrame(node, start);
 }
 
