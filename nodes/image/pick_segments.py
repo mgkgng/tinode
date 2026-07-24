@@ -32,6 +32,9 @@ from ...registry import register
 from ...schema import validate_segments
 
 _PREVIEW_MAX_SIDE = 768
+# How many distinct inputs keep their editor assets on disk before the oldest
+# are pruned. Each is a few hundred PNGs.
+_MAX_CACHED_INPUTS = 4
 
 
 def color_for_id(seg_id: int):
@@ -49,6 +52,40 @@ def color_for_id(seg_id: int):
 		(v, t, p), (q, v, p), (p, v, t), (p, q, v), (t, p, v), (v, p, q),
 	][i % 6]
 	return r, g, b
+
+
+def prune_asset_cache(root: str, keep: str, max_dirs: int = _MAX_CACHED_INPUTS) -> int:
+	"""Keep the `max_dirs` most recent editor-asset folders under `root`.
+
+	Each distinct input gets its own folder holding one PNG per frame (two, for
+	Pick Segments). A 133-frame clip is a few hundred files, and every re-crop or
+	changed image mints a fresh folder — so without pruning this grows without
+	bound for the life of the temp dir. Oldest-first by mtime; the folder for the
+	current input is never removed. Returns how many were deleted.
+	"""
+	import shutil  # noqa: PLC0415
+
+	try:
+		entries = [
+			(os.path.getmtime(p), p)
+			for name in os.listdir(root)
+			for p in (os.path.join(root, name),)
+			if os.path.isdir(p) and name != keep
+		]
+	except OSError:
+		return 0
+	# -1 for the current input's folder, which is kept regardless.
+	excess = len(entries) - max(0, max_dirs - 1)
+	if excess <= 0:
+		return 0
+	removed = 0
+	for _, path in sorted(entries)[:excess]:
+		try:
+			shutil.rmtree(path)
+			removed += 1
+		except OSError:
+			pass
+	return removed
 
 
 def _seg_signature(seg_data) -> str:
@@ -190,6 +227,7 @@ class PickSegments(TiNode):
 			root = os.path.join(folder_paths.get_temp_directory(), "ti_pick", sig)
 			os.makedirs(root, exist_ok=True)
 			subfolder = os.path.join("ti_pick", sig)
+			prune_asset_cache(os.path.dirname(root), sig)
 
 			manifest_frames = []
 			for f in range(N):

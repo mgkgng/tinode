@@ -30,7 +30,10 @@ import torch
 from ...base import TiNode
 from ...registry import register
 from ...schema import validate_segments
-from .pick_segments import _PREVIEW_MAX_SIDE, _img_signature, _seg_signature, color_for_id
+from .pick_segments import (
+	_PREVIEW_MAX_SIDE, _img_signature, _seg_signature, color_for_id,
+	prune_asset_cache,
+)
 
 # Manual ids start here so they never clash with SAM3 track ids.
 _MANUAL_ID_BASE = 1_000_000
@@ -185,6 +188,7 @@ class AddSegments(TiNode):
 			root = os.path.join(folder_paths.get_temp_directory(), "ti_pick", sig)
 			os.makedirs(root, exist_ok=True)
 			subfolder = os.path.join("ti_pick", sig)
+			prune_asset_cache(os.path.dirname(root), sig)
 
 			manifest_frames = []
 			for f in range(N):
