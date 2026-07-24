@@ -15,7 +15,7 @@
 
 import { app } from "../../scripts/app.js";
 import {
-	clamp, getWidget, pointerPos, releaseGraphPointer, urlFor,
+	clamp, fillNodeWidth, getWidget, pointerPos, releaseGraphPointer, urlFor,
 } from "./lib/editor.js";
 
 const NODE_TYPE = "TI_BboxCropManual";
@@ -138,6 +138,7 @@ function draw(node) {
 	const ti = node._ti;
 	const cv = ti.canvas;
 	const ctx = cv.getContext("2d");
+	fillNodeWidth(node, ti.container || ti.wrap);
 
 	// Keep the backing store matched to the on-screen size for crisp lines.
 	const w = Math.max(1, Math.floor(cv.clientWidth));

@@ -85,6 +85,21 @@ export function releaseGraphPointer(e) {
 	}
 }
 
+/** Force a DOM-widget element to span the node's inner width.
+ *
+ *  ComfyUI sizes a DOM widget from its widget layout, and DOMWidgetImpl's
+ *  computeLayoutSize() hardcodes `minWidth: 0` — it only exposes getMinHeight /
+ *  getMaxHeight, with no width hook whatsoever. So the editors grew in HEIGHT
+ *  but the element stayed narrow no matter how wide the node was.
+ *
+ *  The positioner writes a plain inline `width: Npx`, so an !important inline
+ *  width wins. Returns the width applied. */
+export function fillNodeWidth(node, el) {
+	const w = Math.max(64, Math.round((node.size?.[0] ?? 320) - 30));
+	el.style.setProperty("width", `${w}px`, "important");
+	return w;
+}
+
 /** Match the canvas backing store to its laid-out size. Returns false when the
  *  element has no layout yet (nothing worth drawing). */
 export function syncCanvasSize(canvas) {

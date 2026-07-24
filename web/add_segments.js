@@ -11,7 +11,7 @@
 
 import { app } from "../../scripts/app.js";
 import {
-	colorForId, clamp, getWidget, urlFor, pointerPos, releaseGraphPointer,
+	colorForId, clamp, fillNodeWidth, getWidget, urlFor, pointerPos, releaseGraphPointer,
 } from "./lib/editor.js";
 
 const NODE_TYPE = "TI_AddSegments";
@@ -96,6 +96,7 @@ function draw(node) {
 	const tas = node._tas;
 	if (!tas) return;
 	const cv = tas.canvas, ctx = cv.getContext("2d");
+	fillNodeWidth(node, tas.container || tas.wrap);
 	const w = Math.max(1, Math.floor(cv.clientWidth));
 	const h = Math.max(1, Math.floor(cv.clientHeight));
 	if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
