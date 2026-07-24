@@ -198,6 +198,18 @@ function updateCounter(node) {
 		`frame ${tps.frameIdx + 1}/${tps.manifest.num_frames}   ·   ${on}/${total} on`;
 }
 
+// The DOM widget declares its OWN height: ComfyUI's DOMWidgetImpl reads
+// options.getMinHeight in computeLayoutSize(), and that is what makes the node's
+// size account for the canvas. Overriding node.computeSize instead either
+// collapses the node on every move (default height ignores the canvas) or
+// starves the widget of space — both of which we shipped by mistake.
+function canvasHeightFor(node) {
+	const t = node._tps;
+	if (!t) return 260;
+	const w = Math.max(node.size?.[0] || MIN_NODE_W, MIN_NODE_W) - 20;
+	return Math.round(clamp(w * ((t.natH || 1) / (t.natW || 1)), 260, MAX_CANVAS_H));
+}
+
 function setup(node) {
 	if (node._tps) return;
 	const wrap = document.createElement("div");
@@ -230,7 +242,10 @@ function setup(node) {
 		natW: 512, natH: 512, view: { ox: 0, oy: 0, scale: 1 }, hoverIdx: null,
 	};
 
-	node.addDOMWidget("segment_picker", "ti_pick_editor", wrap, { serialize: false, hideOnZoom: false });
+	node.addDOMWidget("segment_picker", "ti_pick_editor", wrap, {
+		serialize: false, hideOnZoom: false,
+		getMinHeight: () => canvasHeightFor(node),
+	});
 
 	// Hide the editor-driven widgets (still serialized with the workflow).
 	for (const name of ["excluded_ids", "current_frame"]) {
@@ -238,14 +253,6 @@ function setup(node) {
 		if (w) { w.type = "hidden"; w.computeSize = () => [0, -4]; }
 	}
 
-	// LiteGraph calls computeSize() on move and redraw, and the default
-	// implementation derives the height from the WIDGETS alone — which collapses
-	// the canvas every time you drag the node. Report the CURRENT size instead
-	// (floored at the minimum), so computeSize can only keep or grow, never shrink.
-	node.computeSize = function () {
-		const cur = this.size || [MIN_NODE_W, MIN_NODE_H];
-		return [Math.max(cur[0], MIN_NODE_W), Math.max(cur[1], MIN_NODE_H)];
-	};
 
 	new ResizeObserver(() => draw(node)).observe(wrap);
 

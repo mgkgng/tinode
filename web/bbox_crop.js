@@ -23,7 +23,8 @@ const HANDLE_HIT = 12;   // px radius (canvas space) to grab a corner/edge
 const HANDLE_VIS = 5;    // half-size of a drawn handle square
 const MIN_BOX = 1;       // smallest box in source pixels
 const MIN_NODE_W = 320;  // node minimum width  (leaves room for the canvas)
-const MIN_NODE_H = 440;  // node minimum height (fixed widgets + canvas)
+const MIN_NODE_H = 440;
+const MAX_CANVAS_H = 2000;  // node minimum height (fixed widgets + canvas)
 
 // Read the box from the four widgets, resolving the "0 = full extent" default
 // the backend uses so an unset box shows as the whole frame instead of empty.
@@ -214,6 +215,18 @@ function loadPreview(node, imageInfo, srcDims) {
 	img.src = url;
 }
 
+// The DOM widget declares its OWN height: ComfyUI's DOMWidgetImpl reads
+// options.getMinHeight in computeLayoutSize(), and that is what makes the node's
+// size account for the canvas. Overriding node.computeSize instead either
+// collapses the node on every move (default height ignores the canvas) or
+// starves the widget of space — both of which we shipped by mistake.
+function canvasHeightFor(node) {
+	const t = node._ti;
+	if (!t) return 260;
+	const w = Math.max(node.size?.[0] || MIN_NODE_W, MIN_NODE_W) - 20;
+	return Math.round(clamp(w * ((t.imgH || 1) / (t.imgW || 1)), 260, MAX_CANVAS_H));
+}
+
 function setupEditor(node) {
 	if (node._ti) return;
 	const container = document.createElement("div");
@@ -232,18 +245,11 @@ function setupEditor(node) {
 	// itself (below), NOT a fixed widget.computeSize that overflows the node.
 	node.addDOMWidget("bbox_editor", "ti_bbox_editor", container, {
 		serialize: false, hideOnZoom: false,
+		getMinHeight: () => canvasHeightFor(node),
 	});
 
 	// Enforce a roomy minimum so there is space for the canvas, and grow the
 	// node to it on creation.
-	// LiteGraph calls computeSize() on move and redraw, and the default
-	// implementation derives the height from the WIDGETS alone — which collapses
-	// the canvas every time you drag the node. Report the CURRENT size instead
-	// (floored at the minimum), so computeSize can only keep or grow, never shrink.
-	node.computeSize = function () {
-		const cur = this.size || [MIN_NODE_W, MIN_NODE_H];
-		return [Math.max(cur[0], MIN_NODE_W), Math.max(cur[1], MIN_NODE_H)];
-	};
 
 	// Redraw whenever the container is resized (node resize, collapse, zoom).
 	const ro = new ResizeObserver(() => draw(node));
