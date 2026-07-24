@@ -308,6 +308,57 @@ def test_insert_then_trim_restores_the_base():
 	assert torch.equal(back, base)
 
 
+def test_web_js_calls_are_all_defined():
+	"""Catch a helper that is called but no longer defined.
+
+	`node --check` only validates syntax, so deleting a function while leaving
+	its call sites parses fine and then throws ReferenceError at runtime — which
+	is exactly how the Add Segments preview broke once. Compare called names
+	against what each module defines or imports.
+	"""
+	import re
+
+	def strip_noise(src):
+		"""Drop comments then string/template literals, so prose and CSS in
+		them ('the boxes (above)', `rgb(...)`) aren't mistaken for calls."""
+		src = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
+		src = re.sub(r"//[^\n]*", " ", src)
+		src = re.sub(r"`(?:\\.|[^`\\])*`", '""', src, flags=re.S)
+		src = re.sub(r"'(?:\\.|[^'\\])*'", '""', src)
+		src = re.sub(r'"(?:\\.|[^"\\])*"', '""', src)
+		return src
+
+	web = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+	keywords = {
+		"if", "for", "while", "switch", "catch", "return", "function", "typeof",
+		"await", "new", "delete", "void", "in", "of", "do", "else",
+	}
+	globals_ = {
+		"Math", "JSON", "Object", "Array", "Number", "String", "Boolean", "Set",
+		"Map", "Image", "Promise", "parseInt", "parseFloat", "isNaN", "console",
+		"document", "window", "requestAnimationFrame", "setTimeout", "ResizeObserver",
+		"encodeURIComponent", "decodeURIComponent", "Infinity",
+	}
+	problems = []
+	for name in sorted(os.listdir(web)):
+		if not name.endswith(".js"):
+			continue
+		src = strip_noise(open(os.path.join(web, name)).read())
+		defined = set(re.findall(r"(?:export\s+)?function\s+(\w+)", src))
+		defined |= set(re.findall(r"(?:const|let|var)\s+(\w+)\s*=", src))
+		# object/class method shorthand, e.g. `async beforeRegisterNodeDef(a, b) {`
+		defined |= set(re.findall(r"(?:async\s+)?(\w+)\s*\([^()]*\)\s*\{", src))
+		for imp in re.findall(r"import\s*\{([^}]*)\}\s*from", src):
+			defined |= {x.strip().split(" as ")[-1] for x in imp.split(",") if x.strip()}
+		defined |= set(re.findall(r"import\s+(\w+)\s+from", src))
+		# bare calls: `name(` not preceded by a dot (so not a method call)
+		for call in set(re.findall(r"(?<![.\w])([a-z_]\w*)\s*\(", src)):
+			if call in defined or call in globals_ or call in keywords:
+				continue
+			problems.append(f"{name}: calls {call}() which is not defined or imported")
+	assert not problems, "undefined helper(s):\n  " + "\n  ".join(problems)
+
+
 def test_color_for_id_is_stable_and_matches_js():
 	"""color_for_id is duplicated in web/lib/editor.js and MUST agree.
 

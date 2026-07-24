@@ -16,10 +16,26 @@ import {
 
 const NODE_TYPE = "TI_AddSegments";
 const MIN_NODE_W = 360;
+// Width the editor grows to on load — a segment picker is unusable small.
+// Only ever grows: a node you widened yourself keeps its size.
+const PREFERRED_W = 720;
+const MAX_CANVAS_H = 900;
 const MIN_NODE_H = 320;
 const MANUAL_ID_BASE = 1000000;
 const MIN_DRAW = 5;                 // ignore accidental micro-drags (canvas px)
 const MANUAL_RGB = [255, 220, 0];   // manual boxes: bright yellow
+
+// Boxes are stored as {sig, items} — sig identifies the image+segments they were
+// drawn against, so a new input can drop them instead of re-applying them.
+function readManualObj(node) {
+	try {
+		const v = JSON.parse(getWidget(node, "manual_segments")?.value || "{}");
+		if (Array.isArray(v)) return { sig: null, items: v };   // legacy bare list
+		if (!v || typeof v !== "object") return { sig: null, items: [] };
+		return { sig: v.sig ?? null, items: Array.isArray(v.items) ? v.items : [] };
+	} catch { return { sig: null, items: [] }; }
+}
+
 function readManual(node) { return readManualObj(node).items; }
 
 function writeManual(node, arr) {
@@ -281,8 +297,8 @@ function fitNodeToAspect(node) {
 	const tas = node._tas;
 	if (!tas.manifest || !tas.natW || !tas.natH) return;
 	const barH = tas.bar.offsetHeight || 32;
-	const width = Math.max(node.size[0], MIN_NODE_W);
-	const canvasH = clamp((width - 20) * (tas.natH / tas.natW), 200, 760);
+	const width = Math.max(node.size[0], PREFERRED_W);
+	const canvasH = clamp((width - 20) * (tas.natH / tas.natW), 260, MAX_CANVAS_H);
 	node.setSize([width, Math.round(barH + canvasH + 20)]);
 	node.setDirtyCanvas?.(true, true);
 	requestAnimationFrame(() => draw(node));

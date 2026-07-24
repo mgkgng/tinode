@@ -19,6 +19,10 @@ import {
 
 const NODE_TYPE = "TI_PickSegments";
 const MIN_NODE_W = 360;
+// Width the editor grows to on load — a segment picker is unusable small.
+// Only ever grows: a node you widened yourself keeps its size.
+const PREFERRED_W = 720;
+const MAX_CANVAS_H = 900;
 const MIN_NODE_H = 320;
 
 // Stored as {sig, ids} — sig identifies the image+segments the selection was
@@ -323,9 +327,9 @@ function fitNodeToAspect(node) {
 	const tps = node._tps;
 	if (!tps.manifest || !tps.natW || !tps.natH) return;
 	const barH = tps.bar.offsetHeight || 32;
-	const width = Math.max(node.size[0], MIN_NODE_W);
+	const width = Math.max(node.size[0], PREFERRED_W);
 	const canvasW = width - 20;                       // wrap/border slack
-	const canvasH = clamp(canvasW * (tps.natH / tps.natW), 200, 760);
+	const canvasH = clamp(canvasW * (tps.natH / tps.natW), 260, MAX_CANVAS_H);
 	node.setSize([width, Math.round(barH + canvasH + 20)]);
 	node.setDirtyCanvas?.(true, true);
 	requestAnimationFrame(() => draw(node));
