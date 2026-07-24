@@ -22,7 +22,7 @@ const MIN_NODE_W = 360;
 // Width the editor grows to on load — a segment picker is unusable small.
 // Only ever grows: a node you widened yourself keeps its size.
 const PREFERRED_W = 720;
-const MAX_CANVAS_H = 900;
+const MAX_CANVAS_H = 2000;
 const MIN_NODE_H = 320;
 
 // Stored as {sig, ids} — sig identifies the image+segments the selection was
@@ -384,6 +384,20 @@ app.registerExtension({
 			else console.warn("[tinode] Pick Segments: no ti_pick in message", message);
 		};
 
+
+		// Keep the node's aspect locked to the frame while the user resizes, so
+		// the image always fills the body instead of sitting in dead space.
+		const onResize = nodeType.prototype.onResize;
+		nodeType.prototype.onResize = function (size) {
+			onResize?.apply(this, arguments);
+			const tps = this._tps;
+			if (!tps || !tps.manifest || !tps.natW || !tps.natH) return;
+			if (!Array.isArray(size)) return;
+			const barH = tps.bar.offsetHeight || 32;
+			const canvasH = clamp((size[0] - 20) * (tps.natH / tps.natW), 260, MAX_CANVAS_H);
+			size[1] = Math.round(barH + canvasH + 20);
+			requestAnimationFrame(() => draw(this));
+		};
 		const onConfigure = nodeType.prototype.onConfigure;
 		nodeType.prototype.onConfigure = function () {
 			const r = onConfigure?.apply(this, arguments);
