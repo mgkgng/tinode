@@ -41,6 +41,7 @@ from tinode.nodes.image.pick_segments import (  # noqa: E402
 	PickSegments, color_for_id, prune_asset_cache,
 )
 from tinode.nodes.image.add_segments import AddSegments, _MANUAL_ID_BASE  # noqa: E402
+from tinode.nodes.image.mask_to_segment import MaskToSegment, mask_to_segments  # noqa: E402
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -261,6 +262,44 @@ def test_add_segments_ignores_degenerate_boxes():
 					{"id": 2, "frame": 0, "bbox": [5, 5, 5, 9]}])     # zero width
 	out = _unwrap(AddSegments().execute(img, segs, manual_segments=bad))[2]
 	assert 1 not in out["ids"] and 2 not in out["ids"]
+
+
+def test_mask_to_segment_is_compatible_and_tightly_cropped():
+	mask = torch.zeros(3, 10, 12)
+	mask[0, 2:7, 4:9] = 0.75
+	mask[2, 1:3, 8:12] = 1.0
+	segments = mask_to_segments(mask, threshold=0.5, segment_id=42)
+
+	validate_segments(segments)
+	assert segments["num_frames"] == 3
+	assert (segments["height"], segments["width"]) == (10, 12)
+	assert segments["ids"] == [42]
+	assert segments["frames"][1] == []                 # alignment preserved
+	first = segments["frames"][0][0]
+	assert first["id"] == 42 and first["bbox"] == [4, 2, 9, 7]
+	assert first["mask"].dtype == torch.uint8
+	assert first["mask"].shape == (5, 5) and bool(first["mask"].all())
+
+	# Its output flows directly into both existing segment editors.
+	image = torch.zeros(3, 10, 12, 3)
+	validate_segments(_unwrap(PickSegments().execute(image, segments))[2])
+	validate_segments(_unwrap(AddSegments().execute(image, segments))[2])
+
+
+def test_mask_to_segment_threshold_empty_and_bad_inputs():
+	mask = torch.tensor([[0.5, 0.51]])
+	segments = MaskToSegment().execute(mask, threshold=0.5)[0]
+	assert segments["frames"][0][0]["bbox"] == [1, 0, 2, 1]
+
+	empty = mask_to_segments(torch.zeros(2, 4, 5))
+	assert empty["ids"] == [] and empty["frames"] == [[], []]
+	for bad in (torch.zeros(1, 1, 2, 3), torch.empty(0, 2, 3)):
+		try:
+			mask_to_segments(bad)
+		except ValueError:
+			pass
+		else:
+			raise AssertionError(f"invalid mask shape {tuple(bad.shape)} was accepted")
 
 
 # ---------------------------------------------------------------- utilities

@@ -107,6 +107,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Insert Video** | Drop a clip into another at a frame. `replace` overwrites the frames it covers — the span's end is the clip's own length, so you never compute it by hand; `insert` splices it in and grows the video. Returns the start/end it occupies. |
 | **Trim Video · Cut Frames** | Cut N frames off the head and/or tail (the video ltrim/rtrim). Never emits an empty batch. |
 | **Cut Video · Start + Frame Count** | Extract an exact contiguous span. The start supports Python-style negative indices (`-1` is the last frame); invalid or overlong ranges report a clear error. |
+| **Mask to Segment** | Convert a MASK batch into one tracked, editable `TI_SAM3_SEGMENTS` object for Pick Segments or Add Segments. Empty frames and video alignment are preserved. |
 | **Pick Segments** / **Add Segments** | Interactive segment curation (above). |
 
 ### `tinode/face`
