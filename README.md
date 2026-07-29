@@ -68,9 +68,15 @@ The complement: **drag a box to add** a region SAM3 missed on the current frame,
 outputs as Pick Segments, so the two are interchangeable and chain in either
 order.
 
-Both segment editors **reset when the input changes** — a selection or a drawn
-box is stamped with a signature of the image + segments it was made against, so
-it is never silently re-applied to a different clip.
+### Delete Segments
+Scrub to a frame and **click a segment to delete that exact instance**. Click it
+again to restore it. Unlike Pick Segments, deletion is per-frame rather than
+per-id, so removing one bad detection does not remove the tracked object from
+the rest of the video.
+
+All segment editors **reset when the input changes** — a selection, deletion,
+or drawn box is stamped with a signature of the image + segments it was made
+against, so it is never silently re-applied to a different clip.
 
 ---
 
@@ -108,7 +114,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Trim Video · Cut Frames** | Cut N frames off the head and/or tail (the video ltrim/rtrim). Never emits an empty batch. |
 | **Cut Video · Start + Frame Count** | Extract an exact contiguous span. The start supports Python-style negative indices (`-1` is the last frame); invalid or overlong ranges report a clear error. |
 | **Mask to Segment** | Convert a MASK batch into one tracked, editable `TI_SAM3_SEGMENTS` object for Pick Segments or Add Segments. Empty frames and video alignment are preserved. |
-| **Pick Segments** / **Add Segments** | Interactive segment curation (above). |
+| **Pick Segments** / **Add Segments** / **Delete Segments** | Interactive segment curation: toggle whole tracked objects, draw new per-frame boxes, or remove individual segment instances from specific frames. |
 
 ### `tinode/face`
 | Node | Does |

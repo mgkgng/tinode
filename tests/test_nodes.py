@@ -42,6 +42,7 @@ from tinode.nodes.image.pick_segments import (  # noqa: E402
 )
 from tinode.nodes.image.add_segments import AddSegments, _MANUAL_ID_BASE  # noqa: E402
 from tinode.nodes.image.mask_to_segment import MaskToSegment, mask_to_segments  # noqa: E402
+from tinode.nodes.image.delete_segments import DeleteSegments, parse_deleted_items  # noqa: E402
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -300,6 +301,33 @@ def test_mask_to_segment_threshold_empty_and_bad_inputs():
 			pass
 		else:
 			raise AssertionError(f"invalid mask shape {tuple(bad.shape)} was accepted")
+
+
+def test_delete_segments_removes_only_the_clicked_frame_instance():
+	segs, image = _segments(), torch.zeros(2, 40, 40, 3)
+	from tinode.nodes.image.pick_segments import _img_signature, _seg_signature
+	sig = f"{_seg_signature(segs)}_{_img_signature(image)}"
+	raw = json.dumps({"sig": sig, "items": [{"frame": 0, "index": 1}]})
+
+	mask, _, out = _unwrap(DeleteSegments().execute(image, segs, deleted_items=raw))
+	assert [s["id"] for s in out["frames"][0]] == [3]
+	assert out["frames"][1] == []
+	assert out["ids"] == [3]
+	assert int(mask[0].sum()) == 100
+	# Input objects are not mutated.
+	assert [s["id"] for s in segs["frames"][0]] == [3, 7]
+
+
+def test_delete_segments_drops_stale_and_malformed_selections():
+	assert parse_deleted_items("bad json", "sig") == set()
+	assert parse_deleted_items(
+		json.dumps({"sig": "old", "items": [{"frame": 0, "index": 0}]}), "new"
+	) == set()
+	assert parse_deleted_items(
+		json.dumps({"sig": "ok", "items": [
+			{"frame": 2, "index": 4}, {"frame": -1, "index": 0}, {"bad": 1},
+		]}), "ok"
+	) == {(2, 4)}
 
 
 # ---------------------------------------------------------------- utilities

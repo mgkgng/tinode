@@ -36,8 +36,8 @@ node's OUTPUT back in instead of its input) means the paste runs off the canvas.
 
 ------------------------------------------------------------ TI_SAM3_SEGMENTS
 Every detection SAM3 made, per frame, before any merge. Produced by the patched
-EasySAM3 Segment node or Mask to Segment, consumed and re-emitted by Pick
-Segments and Add Segments (so they chain in either order).
+EasySAM3 Segment node or Mask to Segment, consumed and re-emitted by Pick,
+Add, and Delete Segments (so they chain in any order).
 
     {
       "num_frames": int, "height": int, "width": int,

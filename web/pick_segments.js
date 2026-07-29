@@ -17,7 +17,7 @@ import {
 	colorForId, clamp, fillNodeWidth, getWidget, urlFor, pointerPos, releaseGraphPointer,
 } from "./lib/editor.js";
 
-const NODE_TYPE = "TI_PickSegments";
+const NODE_TYPES = new Set(["TI_PickSegments", "TI_DeleteSegments"]);
 const MIN_NODE_W = 360;
 // Width the editor grows to on load — a segment picker is unusable small.
 // Only ever grows: a node you widened yourself keeps its size.
@@ -44,6 +44,35 @@ function writeExcluded(node, set) {
 	if (!w) return;
 	const sig = node._tps?.manifest?.sig ?? readExcludedObj(node).sig ?? null;
 	w.value = JSON.stringify({ sig, ids: [...set] });
+	w.callback?.(w.value, app.canvas, node);
+}
+
+function readDeletedObj(node) {
+	try {
+		const v = JSON.parse(getWidget(node, "deleted_items")?.value || "{}");
+		if (!v || typeof v !== "object") return { sig: null, items: [] };
+		return { sig: v.sig ?? null, items: Array.isArray(v.items) ? v.items : [] };
+	} catch { return { sig: null, items: [] }; }
+}
+
+function readSelection(node) {
+	if (!node._tps?.deleteMode) return readExcluded(node);
+	return new Set(readDeletedObj(node).items.map((v) => `${v.frame}:${v.index}`));
+}
+
+function writeSelection(node, set) {
+	if (!node._tps?.deleteMode) {
+		writeExcluded(node, set);
+		return;
+	}
+	const w = getWidget(node, "deleted_items");
+	if (!w) return;
+	const sig = node._tps?.manifest?.sig ?? readDeletedObj(node).sig ?? null;
+	const items = [...set].map((key) => {
+		const [frame, index] = key.split(":").map(Number);
+		return { frame, index };
+	});
+	w.value = JSON.stringify({ sig, items });
 	w.callback?.(w.value, app.canvas, node);
 }
 
@@ -145,7 +174,9 @@ function draw(node) {
 
 	if (!tps.manifest) {
 		ctx.fillStyle = "#888"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
-		ctx.fillText("Run once to load the segments, then click objects to toggle.",
+		ctx.fillText(tps.deleteMode
+			? "Run once, then click a segment to delete it from this frame."
+			: "Run once to load the segments, then click objects to toggle.",
 			cv.width / 2, cv.height / 2);
 		return;
 	}
@@ -156,7 +187,7 @@ function draw(node) {
 	if (fr && fr.src) ctx.drawImage(fr.src, v.ox, v.oy, tps.natW * v.scale, tps.natH * v.scale);
 
 	if (!fr || !fr.meta) return;
-	const excluded = readExcluded(node);
+	const excluded = readSelection(node);
 
 	// Hovered segment: paint its real mask shape.
 	if (tps.hoverIdx != null && tps.hoverIdx >= 0) {
@@ -174,7 +205,8 @@ function draw(node) {
 		const bx = v.ox + x0 * v.scale, by = v.oy + y0 * v.scale;
 		const bw = (x1 - x0) * v.scale, bh = (y1 - y0) * v.scale;
 		const [r, g, b] = colorForId(s.id);
-		const off = excluded.has(s.id);
+		const selectionKey = tps.deleteMode ? `${tps.frameIdx}:${i}` : s.id;
+		const off = excluded.has(selectionKey);
 		ctx.setLineDash(off ? [4, 3] : []);
 		ctx.strokeStyle = off ? `rgba(${r},${g},${b},0.35)` : `rgb(${r},${g},${b})`;
 		ctx.strokeRect(bx, by, bw, bh);
@@ -192,11 +224,22 @@ function draw(node) {
 
 function updateCounter(node) {
 	const tps = node._tps;
-	const excluded = readExcluded(node);
-	const total = tps.manifest.ids.length;
-	const on = tps.manifest.ids.filter((i) => !excluded.has(i)).length;
-	tps.counter.textContent =
-		`frame ${tps.frameIdx + 1}/${tps.manifest.num_frames}   ·   ${on}/${total} on`;
+	const excluded = readSelection(node);
+	if (tps.deleteMode) {
+		const total = tps.manifest.frames.reduce((n, f) => n + f.segs.length, 0);
+		const here = tps.manifest.frames[tps.frameIdx]?.segs.length || 0;
+		const deletedHere = [...excluded].filter(
+			(key) => key.startsWith(`${tps.frameIdx}:`)
+		).length;
+		tps.counter.textContent =
+			`frame ${tps.frameIdx + 1}/${tps.manifest.num_frames}   ·   ` +
+			`${deletedHere}/${here} deleted here · ${excluded.size}/${total} total`;
+	} else {
+		const total = tps.manifest.ids.length;
+		const on = tps.manifest.ids.filter((i) => !excluded.has(i)).length;
+		tps.counter.textContent =
+			`frame ${tps.frameIdx + 1}/${tps.manifest.num_frames}   ·   ${on}/${total} on`;
+	}
 }
 
 // The DOM widget declares its OWN height: ComfyUI's DOMWidgetImpl reads
@@ -211,7 +254,7 @@ function canvasHeightFor(node) {
 	return Math.round(clamp(w * ((t.natH || 1) / (t.natW || 1)), 260, MAX_CANVAS_H));
 }
 
-function setup(node) {
+function setup(node, deleteMode = false) {
 	if (node._tps) return;
 	const wrap = document.createElement("div");
 	wrap.style.cssText = "position:relative;width:100%;height:100%;display:flex;flex-direction:column;box-sizing:border-box;";
@@ -241,6 +284,7 @@ function setup(node) {
 		wrap, bar, canvas, slider, counter, prev, next,
 		manifest: null, frames: [], frameIdx: 0,
 		natW: 512, natH: 512, view: { ox: 0, oy: 0, scale: 1 }, hoverIdx: null,
+		deleteMode,
 	};
 
 	node.addDOMWidget("segment_picker", "ti_pick_editor", wrap, {
@@ -249,7 +293,7 @@ function setup(node) {
 	});
 
 	// Hide the editor-driven widgets (still serialized with the workflow).
-	for (const name of ["excluded_ids", "current_frame"]) {
+	for (const name of ["excluded_ids", "deleted_items", "current_frame"]) {
 		const w = getWidget(node, name);
 		if (w) { w.type = "hidden"; w.computeSize = () => [0, -4]; }
 	}
@@ -318,10 +362,12 @@ function setup(node) {
 		const idx = segIdxAt(node, cx, cy);
 		if (idx < 0) return;
 		const fr = node._tps.frames[node._tps.frameIdx];
-		const id = fr.meta.segs[idx].id;
-		const excluded = readExcluded(node);
-		if (excluded.has(id)) excluded.delete(id); else excluded.add(id);
-		writeExcluded(node, excluded);
+		const key = node._tps.deleteMode
+			? `${node._tps.frameIdx}:${idx}`
+			: fr.meta.segs[idx].id;
+		const excluded = readSelection(node);
+		if (excluded.has(key)) excluded.delete(key); else excluded.add(key);
+		writeSelection(node, excluded);
 		updateCounter(node);
 		draw(node);
 		e.stopPropagation();
@@ -350,16 +396,18 @@ function applyManifest(node, manifest) {
 	const tps = node._tps;
 	// A different input invalidates the selection: track ids are reused across
 	// clips, so keeping it would drop unrelated objects in the new one.
-	const prev = readExcludedObj(node);
+	const prev = tps.deleteMode ? readDeletedObj(node) : readExcludedObj(node);
 	const isNewInput = prev.sig !== manifest.sig;
 
 	tps.manifest = manifest;
 	tps.frames = [];
 	if (isNewInput) {
-		writeExcluded(node, new Set());          // clears, stamped with the new sig
+		writeSelection(node, new Set());         // clears, stamped with the new sig
 		setFrameWidget(node, 0);
-		if (prev.ids.length) {
-			console.info(`[tinode] Pick Segments: new input — cleared ${prev.ids.length} exclusion(s).`);
+		const oldCount = tps.deleteMode ? prev.items.length : prev.ids.length;
+		if (oldCount) {
+			const label = tps.deleteMode ? "Delete Segments" : "Pick Segments";
+			console.info(`[tinode] ${label}: new input — cleared ${oldCount} selection(s).`);
 		}
 	}
 	// Authoritative coordinate space for boxes/label — set NOW so the first
@@ -377,12 +425,13 @@ function applyManifest(node, manifest) {
 app.registerExtension({
 	name: "tinode.pickSegments",
 	async beforeRegisterNodeDef(nodeType, nodeData) {
-		if (nodeData.name !== NODE_TYPE) return;
+		if (!NODE_TYPES.has(nodeData.name)) return;
+		const deleteMode = nodeData.name === "TI_DeleteSegments";
 
 		const onNodeCreated = nodeType.prototype.onNodeCreated;
 		nodeType.prototype.onNodeCreated = function () {
 			const r = onNodeCreated?.apply(this, arguments);
-			setup(this);
+			setup(this, deleteMode);
 			this.setSize([Math.max(this.size[0], MIN_NODE_W), Math.max(this.size[1], MIN_NODE_H)]);
 			return r;
 		};
@@ -390,9 +439,12 @@ app.registerExtension({
 		const onExecuted = nodeType.prototype.onExecuted;
 		nodeType.prototype.onExecuted = function (message) {
 			onExecuted?.apply(this, arguments);
-			const m = message?.ti_pick;
+			const m = deleteMode ? message?.ti_delete : message?.ti_pick;
 			if (m && m.length) applyManifest(this, m[0]);
-			else console.warn("[tinode] Pick Segments: no ti_pick in message", message);
+			else console.warn(
+				`[tinode] ${deleteMode ? "Delete" : "Pick"} Segments: no editor manifest`,
+				message,
+			);
 		};
 
 
