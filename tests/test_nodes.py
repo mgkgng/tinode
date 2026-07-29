@@ -125,6 +125,29 @@ def test_crop_paste_roundtrip_is_bit_exact():
 	assert torch.equal(out[sel], img[sel])
 
 
+def test_paste_feather_does_not_fade_at_image_edge():
+	"""A crop ending at the canvas edge has no outside seam to feather.
+
+	Zero-padding avg_pool used to make the final rows/columns translucent, which
+	leaked the original frame through the processed crop as visible tail lines.
+	"""
+	src = torch.zeros(1, 20, 30, 3)
+	crops = torch.ones(1, 15, 20, 3)
+	item = {
+		"y0": 5, "x0": 5, "h": 15, "w": 20,
+		"oy": 0, "ox": 0, "nh": 15, "nw": 20,
+	}
+	info = {"H": 20, "W": 30, "C": 3, "items": [item]}
+
+	(out,) = MaskCropPasteBack().execute(
+		[src], [crops], [info], masks=None, feather=[4])
+
+	# Bottom touches the image edge and must remain fully pasted. The crop's
+	# internal left/right edges should still be feathered.
+	assert torch.equal(out[0, -1, 9:21], torch.ones(12, 3))
+	assert torch.all(out[0, 10, 5] < out[0, 10, 10])
+
+
 def test_crop_respects_divisible_by():
 	img = torch.rand(1, 200, 300, 3)
 	mask = torch.zeros(1, 200, 300)

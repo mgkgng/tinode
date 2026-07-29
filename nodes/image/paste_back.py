@@ -107,12 +107,23 @@ class MaskCropPasteBack(TiNode):
 				mr = F.interpolate(mr[None, None], size=(h, w),
 								   mode="bilinear", align_corners=False)[0, 0]
 			else:
-				mr = torch.ones(h, w, dtype=region.dtype)
+				mr = torch.ones(h, w, dtype=region.dtype, device=region.device)
 
 			if feather > 0:
 				k = feather * 2 + 1
-				mr = F.avg_pool2d(mr[None, None], kernel_size=k, stride=1,
-								  padding=feather)[0, 0]
+				# Blur in full-frame coordinates. Replicating at the IMAGE edge
+				# prevents a crop which touches that edge from fading against
+				# imaginary zero-alpha pixels beyond the canvas. Zeros around an
+				# internal crop boundary remain zeros, so those real seams still
+				# get feathered.
+				full = torch.zeros(
+					(1, 1, out.shape[1], out.shape[2]),
+					dtype=mr.dtype, device=mr.device,
+				)
+				full[0, 0, y0:y0 + h, x0:x0 + w] = mr
+				full = F.pad(full, (feather, feather, feather, feather), mode="replicate")
+				full = F.avg_pool2d(full, kernel_size=k, stride=1)
+				mr = full[0, 0, y0:y0 + h, x0:x0 + w]
 
 			a = mr.clamp(0, 1).unsqueeze(-1)                       # [h,w,1]
 			dst = out[f, y0:y0 + h, x0:x0 + w, :]
