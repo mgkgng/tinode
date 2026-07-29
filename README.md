@@ -106,6 +106,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Extend Video · Prepend/Append** | Add frames at either end: hold the first/last frame, or splice in another clip (auto-conformed to the base resolution/channels). Returns how many frames it added at each end so you can trim them later. |
 | **Insert Video** | Drop a clip into another at a frame. `replace` overwrites the frames it covers — the span's end is the clip's own length, so you never compute it by hand; `insert` splices it in and grows the video. Returns the start/end it occupies. |
 | **Trim Video · Cut Frames** | Cut N frames off the head and/or tail (the video ltrim/rtrim). Never emits an empty batch. |
+| **Cut Video · Start + Frame Count** | Extract an exact contiguous span. The start supports Python-style negative indices (`-1` is the last frame); invalid or overlong ranges report a clear error. |
 | **Pick Segments** / **Add Segments** | Interactive segment curation (above). |
 
 ### `tinode/face`

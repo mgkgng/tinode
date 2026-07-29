@@ -35,6 +35,7 @@ from tinode.nodes.image.crop_bbox_manual import BboxCropManual  # noqa: E402
 from tinode.nodes.image.extend_video import ExtendVideo  # noqa: E402
 from tinode.nodes.image.insert_video import InsertVideo  # noqa: E402
 from tinode.nodes.image.trim_video import TrimVideo  # noqa: E402
+from tinode.nodes.image.cut_video import CutVideo, cut_bounds  # noqa: E402
 from tinode.nodes.image.paste_back import MaskCropPasteBack  # noqa: E402
 from tinode.nodes.image.pick_segments import (  # noqa: E402
 	PickSegments, color_for_id, prune_asset_cache,
@@ -342,6 +343,35 @@ def test_trim_video_cuts_both_ends():
 	# never emit an empty batch
 	_, n = TrimVideo().execute(base, trim_start=50, trim_end=50)
 	assert n == 1
+
+
+def test_cut_video_uses_python_indices_and_exact_counts():
+	base = torch.arange(10, dtype=torch.float32).reshape(10, 1, 1, 1)
+	(out,) = CutVideo().execute(base, start_index=2, frame_count=3)
+	assert out[:, 0, 0, 0].tolist() == [2, 3, 4]
+
+	(out,) = CutVideo().execute(base, start_index=-8, frame_count=3)
+	assert out[:, 0, 0, 0].tolist() == [2, 3, 4]
+
+	(out,) = CutVideo().execute(base, start_index=-1, frame_count=1)
+	assert out[:, 0, 0, 0].tolist() == [9]
+
+
+def test_cut_video_rejects_invalid_or_inexact_ranges():
+	for args in ((10, 0, 0), (10, 10, 1), (10, -11, 1), (10, 8, 3)):
+		try:
+			cut_bounds(*args)
+		except (ValueError, IndexError):
+			pass
+		else:
+			raise AssertionError(f"cut_bounds{args} should have failed")
+
+	try:
+		CutVideo().execute(torch.empty(0, 4, 4, 3), 0, 1)
+	except ValueError:
+		pass
+	else:
+		raise AssertionError("an empty input batch should have failed")
 
 
 def test_insert_then_trim_restores_the_base():
