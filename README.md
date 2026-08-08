@@ -117,6 +117,30 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Mask to Segment** | Convert a MASK batch into one tracked, editable `TI_SAM3_SEGMENTS` object for Pick Segments or Add Segments. Empty frames and video alignment are preserved. |
 | **Pick Segments** / **Add Segments** / **Delete Segments** | Interactive segment curation: toggle whole tracked objects, draw new per-frame boxes, or remove individual segment instances from specific frames. |
 
+### `tinode/video`
+| Node | Does |
+|---|---|
+| **Load Video** | Decode a file from `input/` to an IMAGE batch via ffmpeg (frame cap / skip / every-nth / force-rate / resize). Faithful colour by default; `force_full_range` fixes a mis-tagged clip. Outputs images, frame count, fps. |
+| **Save Video · Combine** | Encode an IMAGE batch to mp4 / webm / lossless PNG frames via ffmpeg, with the colour controls (`color_range`, `colorspace`, `pix_fmt`, `crf`) that keep a grade intact. Previews in the node. |
+
+These exist so the pack can load and save video without a separate video-nodes
+install. They are **not** 1:1 VHS clones — no audio, no in-browser upload (drop
+files in `input/`), no batch manager — they cover the decode/encode path itself.
+
+#### Video colour
+
+A graded clip can look flat or wrong after a decode/encode round trip. The pixels
+in between are untouched (every crop node here is bit-exact); the shift is the
+YUV↔RGB conversion. Two rules:
+
+- **On load**, the decode trusts the file's colour tags — faithful for a correctly
+  tagged clip, and it matches ffmpeg's own `rgb24` conversion exactly. If a clip
+  still loads washed-out it is mis-tagged: turn on `force_full_range`.
+- **On save**, set `color_range` (tv = limited/16–235, pc = full/0–255) and
+  `colorspace` to **match your source** (`ffprobe` it), so a player interprets the
+  file the way it was graded. For a lossless intermediate, save **PNG frames**
+  (no colour conversion, no compression) and mux to video yourself.
+
 ### `tinode/face`
 | Node | Does |
 |---|---|
