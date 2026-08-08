@@ -98,6 +98,7 @@ against, so it is never silently re-applied to a different clip.
 | Node | Does |
 |---|---|
 | **Mask Clean Islands** | Delete speckle, fill pinholes via connected components. Never erodes/dilates, so the real boundary and its antialiasing survive exactly. |
+| **Pad Image · Add Border** | Enlarge a frame by adding a solid-colour border on any side (hex colour, `#000` default). Outputs a MASK of the added region (invertible) so you can outpaint exactly the new space, plus the padded amount per side. |
 | **Mask Translate** | Shift a mask. |
 | **Batch Drop / Pick Indices** | Keep or remove frames by index list; Pick preserves order, so it doubles as a reorder. |
 | **Mask Drop / Pick Indices** | Same, for MASK batches. |

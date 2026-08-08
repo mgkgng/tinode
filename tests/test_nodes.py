@@ -184,6 +184,30 @@ def test_manual_crop_is_never_empty():
 	assert crop.shape[1:3] == (10, 10), crop.shape
 
 
+def test_pad_image_border_and_mask():
+	from tinode.nodes.image.pad_image import PadImage, _hex_to_rgb
+	# 'bad' is valid hex; only genuinely non-hex input falls back to black
+	assert _hex_to_rgb("bad") == (0xbb / 255, 0xaa / 255, 0xdd / 255)
+	assert _hex_to_rgb("#fff") == (1, 1, 1)
+	for junk in ("red", "xyz", "#12g", "", "#12345"):
+		assert _hex_to_rgb(junk) == (0.0, 0.0, 0.0), junk
+
+	img = torch.rand(2, 10, 8, 3)
+	out, mask, t, b, l, r = PadImage().execute(
+		img, top=3, bottom=1, left=2, right=4, color="#ff0000")
+	assert tuple(out.shape) == (2, 14, 14, 3) and (t, b, l, r) == (3, 1, 2, 4)
+	assert torch.equal(out[:, 3:13, 2:10, :], img)               # original untouched
+	assert torch.allclose(out[0, 0, 0, :], torch.tensor([1.0, 0.0, 0.0]))
+	assert mask[0, 0, 0] == 1.0 and mask[0, 3, 2] == 0.0         # border=1, original=0
+	assert int(mask[0].sum()) == 14 * 14 - 10 * 8
+	# invert flips which region is marked
+	_, minv, *_ = PadImage().execute(img, top=3, left=2, invert_mask=True)
+	assert minv[0, 0, 0] == 0.0 and minv[0, 3, 2] == 1.0
+	# zero pad is a passthrough with an empty mask
+	out0, mask0, *_ = PadImage().execute(img)
+	assert torch.equal(out0, img) and int(mask0.sum()) == 0
+
+
 def test_paste_back_rejects_a_wrong_sized_source():
 	"""The classic mis-wire: the crop node's OUTPUT fed back in as the source."""
 	info = {"H": 512, "W": 512, "C": 3, "items": [
