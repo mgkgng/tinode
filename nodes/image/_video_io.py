@@ -38,15 +38,17 @@ def probe(path):
 	Zeros/empties on anything ffprobe can't tell us; callers fall back to the
 	decoded frame size.
 	"""
-	info = {"width": 0, "height": 0, "fps": 0.0, "nb_frames": 0,
-			"pix_fmt": "", "color_range": "", "color_space": "", "duration": 0.0}
+	info = {"width": 0, "height": 0, "fps": 0.0, "nb_frames": 0, "pix_fmt": "",
+			"color_range": "", "color_space": "", "color_transfer": "",
+			"color_primaries": "", "duration": 0.0}
 	fp = ffprobe_exe()
 	if not fp:
 		return info
 	try:
 		out = subprocess.run(
 			[fp, "-v", "error", "-select_streams", "v:0", "-show_entries",
-			 "stream=width,height,r_frame_rate,nb_frames,pix_fmt,color_range,color_space,duration",
+			 "stream=width,height,r_frame_rate,nb_frames,pix_fmt,color_range,"
+			 "color_space,color_transfer,color_primaries,duration",
 			 "-of", "json", path],
 			capture_output=True, text=True, check=True).stdout
 		st = (json.loads(out).get("streams") or [{}])[0]
@@ -60,19 +62,41 @@ def probe(path):
 		info["pix_fmt"] = st.get("pix_fmt") or ""
 		info["color_range"] = st.get("color_range") or ""
 		info["color_space"] = st.get("color_space") or ""
+		info["color_transfer"] = st.get("color_transfer") or ""
+		info["color_primaries"] = st.get("color_primaries") or ""
 		info["duration"] = float(st.get("duration") or 0.0)
 	except Exception as exc:  # noqa: BLE001
 		print(f"[tinode] ffprobe failed on {path!r}: {exc!r}")
 	return info
 
 
+HDR_TRANSFERS = ("smpte2084", "arib-std-b67")   # PQ (HDR10) and HLG
+
+
+def _is_hdr(info):
+	return info.get("color_transfer") in HDR_TRANSFERS
+
+
+# HDR (BT.2020/PQ or HLG) -> SDR (BT.709). Without this, a naive decode reads the
+# PQ curve and wide gamut as if they were sRGB, which is the flat, washed-out,
+# desaturated look. `hable` is a filmic operator; desat=0 keeps saturation.
+_TONEMAP_CHAIN = [
+	"zscale=t=linear:npl=100", "format=gbrpf32le", "zscale=p=bt709",
+	"tonemap=hable:desat=0", "zscale=t=bt709:m=bt709:r=tv",
+]
+
+
 def decode(path, *, force_rate=0.0, skip_first=0, every_nth=1, cap=0, width=0, height=0,
-		   full_range=False):
+		   full_range=False, tonemap="auto"):
 	"""Decode a video to a float IMAGE tensor [N,H,W,3] in 0..1, plus its probe info.
 
 	force_rate>0 resamples to that fps first; then skip_first / every_nth select
 	frames; cap>0 limits the count; width&height (both) resize. Matches the order
 	VHS applies these in.
+
+	tonemap: "auto" tone-maps HDR (PQ/HLG) sources to SDR and leaves SDR alone;
+	"on" forces it; "off" never does. HDR read as SDR is the classic flat,
+	desaturated result — auto fixes it without touching normal clips.
 
 	full_range: force the YUV->RGB conversion to treat the source as full range.
 	The default (False) trusts the file's own tag, which is faithful for correctly
@@ -99,10 +123,15 @@ def decode(path, *, force_rate=0.0, skip_first=0, every_nth=1, cap=0, width=0, h
 	if conds:
 		filters.append("select=" + "*".join(conds))
 
+	# HDR -> SDR, on selected frames only (cheaper than before select).
+	do_tonemap = tonemap == "on" or (tonemap == "auto" and _is_hdr(info))
+	if do_tonemap:
+		filters += _TONEMAP_CHAIN
+
 	# Colour: normally swscale converts using the file's tagged range. When a clip
 	# is mis-tagged we force the input to be read as full range, which is the usual
 	# "loads washed out" fix. Output rgb24 is always full range either way.
-	if full_range:
+	if full_range and not do_tonemap:
 		filters.append("scale=in_range=full:out_range=full")
 
 	if width and height:

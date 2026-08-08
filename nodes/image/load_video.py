@@ -57,9 +57,13 @@ class LoadVideo(TiNode):
 				"custom_width": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 8,
 					"tooltip": "Resize width. 0 with custom_height=0 keeps source size."}),
 				"custom_height": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 8}),
+				"tonemap_hdr": (["auto", "on", "off"], {"default": "auto",
+					"tooltip": "Tone-map HDR (BT.2020/PQ or HLG) sources to SDR. "
+							   "auto = only when the source is HDR. Fixes the flat, "
+							   "washed-out look of HDR footage decoded as SDR."}),
 				"force_full_range": ("BOOLEAN", {"default": False,
-					"tooltip": "Decode the source as full-range. Fixes a clip that "
-							   "loads washed-out because it is tagged/limited wrong."}),
+					"tooltip": "Decode as full-range (for a clip mis-tagged as "
+							   "limited). Not for HDR — use tonemap_hdr for that."}),
 			},
 		}
 
@@ -78,7 +82,8 @@ class LoadVideo(TiNode):
 			return video
 
 	def execute(self, video, force_rate=0.0, frame_load_cap=0, skip_first_frames=0,
-				select_every_nth=1, custom_width=0, custom_height=0, force_full_range=False):
+				select_every_nth=1, custom_width=0, custom_height=0,
+				tonemap_hdr="auto", force_full_range=False):
 		import folder_paths  # noqa: PLC0415
 		if not video:
 			raise RuntimeError("No video selected — put a file in ComfyUI's input/ folder.")
@@ -95,6 +100,7 @@ class LoadVideo(TiNode):
 			path, force_rate=float(force_rate), skip_first=int(skip_first_frames),
 			every_nth=int(select_every_nth), cap=int(frame_load_cap),
 			width=int(w or 0), height=int(h or 0), full_range=bool(force_full_range),
+			tonemap=str(tonemap_hdr),
 		)
 		fps = float(force_rate) if force_rate and force_rate > 0 else (info["fps"] or 0.0)
 		return (imgs, imgs.shape[0], fps)

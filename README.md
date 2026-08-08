@@ -133,9 +133,14 @@ A graded clip can look flat or wrong after a decode/encode round trip. The pixel
 in between are untouched (every crop node here is bit-exact); the shift is the
 YUV↔RGB conversion. Two rules:
 
-- **On load**, the decode trusts the file's colour tags — faithful for a correctly
-  tagged clip, and it matches ffmpeg's own `rgb24` conversion exactly. If a clip
-  still loads washed-out it is mis-tagged: turn on `force_full_range`.
+- **HDR sources** (BT.2020 + PQ/`smpte2084` or HLG — common with 4K footage) look
+  flat and washed-out when decoded as SDR, because the PQ curve and wide gamut get
+  read as sRGB. Load Video's `tonemap_hdr` (default **auto**) tone-maps them to
+  BT.709 SDR and leaves normal clips alone. `ffprobe` your file — if
+  `color_transfer` is `smpte2084`/`arib-std-b67`, this is your fix.
+- **On load** for SDR, the decode trusts the file's colour tags — faithful, and it
+  matches ffmpeg's own `rgb24` conversion exactly. If an SDR clip still loads
+  washed-out it is mis-tagged: turn on `force_full_range`.
 - **On save**, set `color_range` (tv = limited/16–235, pc = full/0–255) and
   `colorspace` to **match your source** (`ffprobe` it), so a player interprets the
   file the way it was graded. For a lossless intermediate, save **PNG frames**
