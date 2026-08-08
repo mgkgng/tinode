@@ -29,30 +29,6 @@ function showPreview(node, name) {
 	lv.video.src = previewUrl(name);
 }
 
-async function uploadFile(node, file) {
-	try {
-		const body = new FormData();
-		body.append("image", file, file.name);           // endpoint field is "image"
-		const resp = await api.fetchApi("/upload/image", { method: "POST", body });
-		if (resp.status !== 200) { alert(`Upload failed (${resp.status})`); return; }
-		const data = await resp.json();
-		const name = data.subfolder ? `${data.subfolder}/${data.name}` : data.name;
-
-		const w = videoWidget(node);
-		if (w) {
-			const vals = w.options.values || (w.options.values = []);
-			if (!vals.includes(name)) vals.push(name);
-			w.value = name;
-			w.callback?.(name);
-		}
-		showPreview(node, name);
-		node.setDirtyCanvas?.(true, true);
-	} catch (e) {
-		console.error("[tinode] Load Video upload failed", e);
-		alert("Upload failed — see console.");
-	}
-}
-
 function setup(node) {
 	if (node._lv) return;
 
@@ -68,24 +44,12 @@ function setup(node) {
 	video.style.cssText = "max-width:100%;max-height:100%;display:none;";
 	wrap.append(hint, video);
 
-	// Hidden native file picker.
-	const picker = document.createElement("input");
-	picker.type = "file";
-	picker.accept = "video/*";
-	picker.style.display = "none";
-	picker.addEventListener("change", () => {
-		if (picker.files?.[0]) uploadFile(node, picker.files[0]);
-		picker.value = "";
-	});
-	document.body.appendChild(picker);
-
-	node._lv = { wrap, hint, video, picker };
+	node._lv = { wrap, hint, video };
 	node.addDOMWidget("video_preview", "ti_video_preview", wrap, { serialize: false, hideOnZoom: false });
 
-	// Browse/upload button.
-	node.addWidget("button", "📁 choose / upload video", null, () => picker.click());
-
-	// Keep the preview in sync with the combo selection.
+	// The upload button itself comes from the combo's video_upload flag (declared
+	// in Python) — ComfyUI's built-in, wired to /upload/image. We just keep the
+	// preview in sync with whatever the combo ends up selected on.
 	const w = videoWidget(node);
 	if (w) {
 		const prev = w.callback;

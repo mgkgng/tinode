@@ -45,7 +45,10 @@ class LoadVideo(TiNode):
 		files = _input_videos() or [""]
 		return {
 			"required": {
-				"video": (files, {"tooltip": "A file in ComfyUI's input/ folder."}),
+				# video_upload adds ComfyUI's built-in "choose file to upload"
+				# button next to the combo (same as the core image loader).
+				"video": (files, {"video_upload": True,
+					"tooltip": "Pick a file from input/, or upload one with the button."}),
 			},
 			"optional": {
 				"force_rate": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 240.0, "step": 0.01,
