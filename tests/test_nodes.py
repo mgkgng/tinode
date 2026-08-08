@@ -505,6 +505,7 @@ def test_web_js_calls_are_all_defined():
 		"Map", "Image", "Promise", "parseInt", "parseFloat", "isNaN", "console",
 		"document", "window", "requestAnimationFrame", "setTimeout", "ResizeObserver",
 		"encodeURIComponent", "decodeURIComponent", "Infinity",
+		"alert", "confirm", "prompt", "fetch", "FormData", "URL", "Date", "Error",
 	}
 	problems = []
 	for name in sorted(os.listdir(web)):
