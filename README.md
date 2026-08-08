@@ -136,8 +136,12 @@ YUV↔RGB conversion. Two rules:
 - **HDR sources** (BT.2020 + PQ/`smpte2084` or HLG — common with 4K footage) look
   flat and washed-out when decoded as SDR, because the PQ curve and wide gamut get
   read as sRGB. Load Video's `tonemap_hdr` (default **auto**) tone-maps them to
-  BT.709 SDR and leaves normal clips alone. `ffprobe` your file — if
-  `color_transfer` is `smpte2084`/`arib-std-b67`, this is your fix.
+  BT.709 SDR and leaves normal clips alone. It uses ffmpeg's **libplacebo**
+  (BT.2446a) when available — the best-looking option — and falls back to a CPU
+  zscale+tonemap chain otherwise. `ffprobe` your file — if `color_transfer` is
+  `smpte2084`/`arib-std-b67`, this is your fix, and no source re-encode is needed.
+  (8-bit note: tone-mapping into ComfyUI's 8-bit pipeline can band slightly in
+  smooth gradients — correct look, not full HDR depth.)
 - **On load** for SDR, the decode trusts the file's colour tags — faithful, and it
   matches ffmpeg's own `rgb24` conversion exactly. If an SDR clip still loads
   washed-out it is mis-tagged: turn on `force_full_range`.

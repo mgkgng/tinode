@@ -72,14 +72,35 @@ def probe(path):
 
 HDR_TRANSFERS = ("smpte2084", "arib-std-b67")   # PQ (HDR10) and HLG
 
+_FILTERS_CACHE = None
+
+
+def _has_filter(name):
+	"""True if this ffmpeg build has the named filter (cached)."""
+	global _FILTERS_CACHE
+	if _FILTERS_CACHE is None:
+		exe = ffmpeg_exe()
+		try:
+			out = subprocess.run([exe, "-hide_banner", "-filters"],
+								 capture_output=True, text=True).stdout
+			_FILTERS_CACHE = {ln.split()[1] for ln in out.splitlines()
+							  if len(ln.split()) > 1 and ln.startswith(" ")}
+		except Exception:
+			_FILTERS_CACHE = set()
+	return name in _FILTERS_CACHE
+
 
 def _is_hdr(info):
 	return info.get("color_transfer") in HDR_TRANSFERS
 
 
-# HDR (BT.2020/PQ or HLG) -> SDR (BT.709). Without this, a naive decode reads the
-# PQ curve and wide gamut as if they were sRGB, which is the flat, washed-out,
-# desaturated look. `hable` is a filmic operator; desat=0 keeps saturation.
+# Preferred HDR->SDR: libplacebo with the BT.2446a method — the modern, best
+# looking tone-mapper, and it does gamut + curve + range in one GPU pass.
+_LIBPLACEBO = ("libplacebo=colorspace=bt709:color_primaries=bt709:"
+			   "color_trc=bt709:range=tv:tonemapping=bt.2446a")
+
+# Fallback when libplacebo is absent or has no GPU: a CPU zscale + tonemap chain.
+# Reads PQ/wide-gamut correctly instead of as sRGB (the flat, washed-out look).
 _TONEMAP_CHAIN = [
 	"zscale=t=linear:npl=100", "format=gbrpf32le", "zscale=p=bt709",
 	"tonemap=hable:desat=0", "zscale=t=bt709:m=bt709:r=tv",
@@ -110,10 +131,11 @@ def decode(path, *, force_rate=0.0, skip_first=0, every_nth=1, cap=0, width=0, h
 		raise RuntimeError("ffmpeg not found (install ffmpeg or imageio-ffmpeg).")
 
 	info = probe(path)
-	filters = []
-	if force_rate and force_rate > 0:
-		filters.append(f"fps={force_rate}")
+	do_tonemap = tonemap == "on" or (tonemap == "auto" and _is_hdr(info))
 
+	pre = []                                       # fps + frame selection
+	if force_rate and force_rate > 0:
+		pre.append(f"fps={force_rate}")
 	conds = []
 	if skip_first and skip_first > 0:
 		conds.append(f"gte(n\\,{int(skip_first)})")
@@ -121,31 +143,46 @@ def decode(path, *, force_rate=0.0, skip_first=0, every_nth=1, cap=0, width=0, h
 		base = f"n-{int(skip_first)}" if skip_first > 0 else "n"
 		conds.append(f"not(mod({base}\\,{int(every_nth)}))")
 	if conds:
-		filters.append("select=" + "*".join(conds))
+		pre.append("select=" + "*".join(conds))
 
-	# HDR -> SDR, on selected frames only (cheaper than before select).
-	do_tonemap = tonemap == "on" or (tonemap == "auto" and _is_hdr(info))
-	if do_tonemap:
-		filters += _TONEMAP_CHAIN
-
-	# Colour: normally swscale converts using the file's tagged range. When a clip
-	# is mis-tagged we force the input to be read as full range, which is the usual
-	# "loads washed out" fix. Output rgb24 is always full range either way.
+	post = []                                      # resize, after any tonemap
+	# Force full range only matters for a mis-tagged SDR clip, never for tonemapped HDR.
 	if full_range and not do_tonemap:
-		filters.append("scale=in_range=full:out_range=full")
-
+		post.append("scale=in_range=full:out_range=full")
 	if width and height:
-		filters.append(f"scale={int(width)}:{int(height)}")
+		post.append(f"scale={int(width)}:{int(height)}")
 
-	cmd = [exe, "-v", "error", "-i", path]
-	if filters:
-		cmd += ["-vf", ",".join(filters)]
-	cmd += ["-vsync", "0"]                        # keep exactly the frames select() passed
-	if cap and cap > 0:
-		cmd += ["-frames:v", str(int(cap))]
-	cmd += ["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+	def build(tm):
+		# tm: "placebo" | "zscale" | None
+		fl = list(pre)
+		if tm == "placebo":
+			fl.append(_LIBPLACEBO)
+		elif tm == "zscale":
+			fl += _TONEMAP_CHAIN
+		fl += post
+		cmd = [exe, "-v", "error", "-i", path]
+		if fl:
+			cmd += ["-vf", ",".join(fl)]
+		cmd += ["-vsync", "0"]                     # keep exactly the frames select() passed
+		if cap and cap > 0:
+			cmd += ["-frames:v", str(int(cap))]
+		cmd += ["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+		return cmd
 
-	proc = subprocess.run(cmd, capture_output=True)
+	if do_tonemap and _has_filter("libplacebo"):
+		attempts = ["placebo", "zscale"]           # libplacebo is best; zscale is the fallback
+	elif do_tonemap:
+		attempts = ["zscale"]
+	else:
+		attempts = [None]
+
+	proc = None
+	for i, tm in enumerate(attempts):
+		proc = subprocess.run(build(tm), capture_output=True)
+		if proc.returncode == 0:
+			break
+		if i < len(attempts) - 1:
+			print(f"[tinode] Load Video: {tm} tonemap failed, trying {attempts[i + 1]}…")
 	if proc.returncode != 0:
 		raise RuntimeError("ffmpeg decode failed:\n" + proc.stderr.decode("utf-8", "replace")[-800:])
 
