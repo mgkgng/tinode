@@ -116,6 +116,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Cut Video · Start + Frame Count** | Extract an exact contiguous span. The start supports Python-style negative indices (`-1` is the last frame); invalid or overlong ranges report a clear error. |
 | **Mask to Segment** | Convert a MASK batch into one tracked, editable `TI_SAM3_SEGMENTS` object for Pick Segments or Add Segments. Empty frames and video alignment are preserved. |
 | **Pick Segments** / **Add Segments** / **Delete Segments** | Interactive segment curation: toggle whole tracked objects, draw new per-frame boxes, or remove individual segment instances from specific frames. |
+| **Segments to Masks** | Split the (unmerged) `segments` stream into a per-object mask batch — one `[frames,H,W]` MASK per id, as a LIST you can take one at a time. Set `object_ids` to a single id to get just that object. |
 
 ### `tinode/video`
 | Node | Does |

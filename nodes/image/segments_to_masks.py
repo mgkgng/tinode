@@ -1,0 +1,101 @@
+"""Segments to Masks — split a TI_SAM3_SEGMENTS stream into per-object masks.
+
+EasySAM3 Segment's own `mask` output is MERGED (every selected object unioned
+into one [frames,H,W] mask), so you can't get the objects back out of it. This
+node instead reads the unmerged `segments` output and rebuilds a full-frame mask
+batch PER object id — so you get them one at a time instead of all fused.
+
+The masks output is a LIST (OUTPUT_IS_LIST): downstream nodes iterate it one mask
+at a time, and its Nth item lines up with the Nth id in the `ids` string. To pull
+a single object, set `object_ids` to that id (e.g. "5") and the list has just it.
+
+Each per-id mask is [frames, H, W]: for every frame the object appears in, its
+bbox-cropped mask is pasted into a zeroed full frame; frames where it is absent
+stay black.
+"""
+
+from __future__ import annotations
+
+import torch
+
+from ...base import TiNode
+from ...registry import register
+from ...schema import validate_segments
+
+
+def _parse_ids(spec, available):
+	"""'' / '-1' -> all ids (sorted); '5,7' -> those that exist, in that order."""
+	s = str(spec).strip()
+	if s in ("", "-1"):
+		return list(available)
+	out = []
+	for tok in s.split(","):
+		tok = tok.strip()
+		if not tok:
+			continue
+		try:
+			i = int(tok)
+		except ValueError:
+			continue
+		if i in available and i not in out:
+			out.append(i)
+	return out
+
+
+@register
+class SegmentsToMasks(TiNode):
+	DISPLAY_NAME = "Segments to Masks (ti)"
+	CATEGORY = "tinode/image"
+
+	@classmethod
+	def INPUT_TYPES(cls):
+		return {
+			"required": {
+				"segments": ("TI_SAM3_SEGMENTS",),
+			},
+			"optional": {
+				"object_ids": ("STRING", {"default": "-1",
+					"tooltip": "Which objects to emit, comma-separated (e.g. 5,7). "
+							   "-1 or empty = every object. One id = one mask."}),
+			},
+		}
+
+	# masks is a LIST — one [frames,H,W] MASK per id, iterated one by one.
+	RETURN_TYPES = ("MASK", "STRING", "INT")
+	RETURN_NAMES = ("masks", "ids", "count")
+	OUTPUT_IS_LIST = (True, False, False)
+	FUNCTION = "execute"
+
+	def execute(self, segments, object_ids="-1"):
+		validate_segments(segments)
+		H = int(segments["height"])
+		W = int(segments["width"])
+		frames = segments.get("frames", [])
+		N = int(segments.get("num_frames", len(frames)))
+		available = list(segments.get("ids", []))
+
+		wanted = _parse_ids(object_ids, available)
+		if not wanted:
+			# Nothing to emit — a single empty frame keeps the list non-empty so
+			# downstream doesn't choke on a zero-length list.
+			return ([torch.zeros((N, H, W), dtype=torch.float32)], "", 0)
+
+		# Bucket detections by id -> {frame: cropped mask} for a single pass.
+		by_id = {i: {} for i in wanted}
+		want = set(wanted)
+		for f in range(N):
+			for s in (frames[f] if f < len(frames) else []):
+				if s["id"] in want:
+					by_id[s["id"]][f] = s
+
+		masks = []
+		for i in wanted:
+			m = torch.zeros((N, H, W), dtype=torch.float32)
+			for f, s in by_id[i].items():
+				x0, y0, x1, y1 = s["bbox"]
+				m[f, y0:y1, x0:x1] = torch.maximum(
+					m[f, y0:y1, x0:x1], s["mask"].to(torch.float32))
+			masks.append(m)
+
+		ids_str = ",".join(str(i) for i in wanted)
+		return (masks, ids_str, len(masks))

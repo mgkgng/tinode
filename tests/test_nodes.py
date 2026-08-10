@@ -281,6 +281,23 @@ def test_add_segments_merges_and_matches_pick_outputs():
 	assert [s["id"] for s in segs["frames"][0]] == [3, 7]
 
 
+def test_segments_to_masks_splits_per_id():
+	from tinode.nodes.image.segments_to_masks import SegmentsToMasks
+	segs = {"num_frames": 3, "height": 40, "width": 50, "ids": [5, 7], "frames": [
+		[_segment(5, 0, 0, 10, 10)], [_segment(7, 20, 20, 35, 30)],
+		[_segment(5, 5, 5, 15, 15)]]}
+	masks, ids, count = SegmentsToMasks().execute(segs, object_ids="-1")
+	assert count == 2 and ids == "5,7" and len(masks) == 2      # a LIST, one per id
+	assert int(masks[0][0].sum()) == 100 and int(masks[0][1].sum()) == 0  # id5 absent frame1
+	assert int(masks[1][1].sum()) == 150                        # id7 only on frame1
+	# a single id yields a single-item list — "one at a time"
+	only, ids1, c1 = SegmentsToMasks().execute(segs, object_ids="7")
+	assert c1 == 1 and len(only) == 1 and ids1 == "7"
+	# the list order follows the requested id order
+	m2, ids2, _ = SegmentsToMasks().execute(segs, object_ids="7,5")
+	assert ids2 == "7,5" and int(m2[0][1].sum()) == 150
+
+
 def test_add_segments_ignores_degenerate_boxes():
 	segs, img = _segments(), torch.zeros(2, 40, 40, 3)
 	bad = json.dumps([{"id": 1, "frame": 99, "bbox": [0, 0, 5, 5]},     # frame OOR
