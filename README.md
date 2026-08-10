@@ -117,6 +117,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Mask to Segment** | Convert a MASK batch into one tracked, editable `TI_SAM3_SEGMENTS` object for Pick Segments or Add Segments. Empty frames and video alignment are preserved. |
 | **Pick Segments** / **Add Segments** / **Delete Segments** | Interactive segment curation: toggle whole tracked objects, draw new per-frame boxes, or remove individual segment instances from specific frames. |
 | **Segments to Masks** | Split the (unmerged) `segments` stream into a per-object mask batch — one `[frames,H,W]` MASK per id, as a LIST you can take one at a time. Set `object_ids` to a single id to get just that object. |
+| **Segment Mask · Select** | One object's mask as a **single** MASK, picked by `index` (0..count-1) — for stepping through objects into a mask input like Mask Bbox Crop. Reports the `id` and total `count`. |
 
 ### `tinode/video`
 | Node | Does |

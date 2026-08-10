@@ -23,6 +23,26 @@ from ...registry import register
 from ...schema import validate_segments
 
 
+def build_id_mask(segments, seg_id):
+	"""Full-frame [frames,H,W] mask for one object id across the whole clip.
+
+	The object's bbox-cropped mask is pasted into a zeroed frame wherever it
+	appears; frames where it is absent stay black.
+	"""
+	H = int(segments["height"])
+	W = int(segments["width"])
+	frames = segments.get("frames", [])
+	N = int(segments.get("num_frames", len(frames)))
+	m = torch.zeros((N, H, W), dtype=torch.float32)
+	for f in range(N):
+		for s in (frames[f] if f < len(frames) else []):
+			if s["id"] == seg_id:
+				x0, y0, x1, y1 = s["bbox"]
+				m[f, y0:y1, x0:x1] = torch.maximum(
+					m[f, y0:y1, x0:x1], s["mask"].to(torch.float32))
+	return m
+
+
 def _parse_ids(spec, available):
 	"""'' / '-1' -> all ids (sorted); '5,7' -> those that exist, in that order."""
 	s = str(spec).strip()
@@ -70,8 +90,7 @@ class SegmentsToMasks(TiNode):
 		validate_segments(segments)
 		H = int(segments["height"])
 		W = int(segments["width"])
-		frames = segments.get("frames", [])
-		N = int(segments.get("num_frames", len(frames)))
+		N = int(segments.get("num_frames", len(segments.get("frames", []))))
 		available = list(segments.get("ids", []))
 
 		wanted = _parse_ids(object_ids, available)
@@ -80,22 +99,6 @@ class SegmentsToMasks(TiNode):
 			# downstream doesn't choke on a zero-length list.
 			return ([torch.zeros((N, H, W), dtype=torch.float32)], "", 0)
 
-		# Bucket detections by id -> {frame: cropped mask} for a single pass.
-		by_id = {i: {} for i in wanted}
-		want = set(wanted)
-		for f in range(N):
-			for s in (frames[f] if f < len(frames) else []):
-				if s["id"] in want:
-					by_id[s["id"]][f] = s
-
-		masks = []
-		for i in wanted:
-			m = torch.zeros((N, H, W), dtype=torch.float32)
-			for f, s in by_id[i].items():
-				x0, y0, x1, y1 = s["bbox"]
-				m[f, y0:y1, x0:x1] = torch.maximum(
-					m[f, y0:y1, x0:x1], s["mask"].to(torch.float32))
-			masks.append(m)
-
+		masks = [build_id_mask(segments, i) for i in wanted]
 		ids_str = ",".join(str(i) for i in wanted)
 		return (masks, ids_str, len(masks))

@@ -298,6 +298,23 @@ def test_segments_to_masks_splits_per_id():
 	assert ids2 == "7,5" and int(m2[0][1].sum()) == 150
 
 
+def test_segment_mask_select_single_and_clamps():
+	from tinode.nodes.image.segment_mask_select import SegmentMaskSelect
+	segs = {"num_frames": 2, "height": 64, "width": 64, "ids": [5, 7, 9], "frames": [
+		[_segment(5, 0, 0, 20, 20), _segment(7, 30, 30, 50, 50)],
+		[_segment(9, 10, 40, 25, 60)]]}
+	m0, id0, count = SegmentMaskSelect().execute(segs, index=0)
+	assert torch.is_tensor(m0) and m0.shape == (2, 64, 64)      # a single MASK, not a list
+	assert (id0, count) == (5, 3) and int(m0[0, 0:20, 0:20].sum()) == 400
+	# out-of-range index clamps to the last object
+	_, idlast, _ = SegmentMaskSelect().execute(segs, index=99)
+	assert idlast == 9
+	# empty set -> id -1, count 0, valid empty mask
+	e, eid, ec = SegmentMaskSelect().execute(
+		{"num_frames": 2, "height": 8, "width": 8, "ids": [], "frames": [[], []]})
+	assert (eid, ec) == (-1, 0) and e.shape == (2, 8, 8)
+
+
 def test_add_segments_ignores_degenerate_boxes():
 	segs, img = _segments(), torch.zeros(2, 40, 40, 3)
 	bad = json.dumps([{"id": 1, "frame": 99, "bbox": [0, 0, 5, 5]},     # frame OOR
