@@ -11,14 +11,31 @@ Not a node module (no @register) — just imported by the two video nodes.
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".gif", ".mpg", ".mpeg", ".wmv")
 
+# Where a binary might live when PATH is stripped (ComfyUI launched from a
+# desktop/systemd launcher often has only the venv bin on PATH).
+_COMMON_BINDIRS = ("/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/bin")
+
+
+def _find(name):
+	exe = shutil.which(name)
+	if exe:
+		return exe
+	for d in _COMMON_BINDIRS:
+		p = os.path.join(d, name)
+		if os.path.isfile(p) and os.access(p, os.X_OK):
+			return p
+	return None
+
 
 def ffmpeg_exe():
-	exe = shutil.which("ffmpeg")
+	exe = _find("ffmpeg")
 	if exe:
 		return exe
 	try:
@@ -29,7 +46,48 @@ def ffmpeg_exe():
 
 
 def ffprobe_exe():
-	return shutil.which("ffprobe")
+	exe = _find("ffprobe")
+	if exe:
+		return exe
+	# ffprobe usually sits next to ffmpeg — check that dir too.
+	fm = ffmpeg_exe()
+	if fm:
+		cand = os.path.join(os.path.dirname(fm), "ffprobe")
+		if os.path.isfile(cand) and os.access(cand, os.X_OK):
+			return cand
+	return None
+
+
+def _probe_via_ffmpeg(path):
+	"""Fallback probe when ffprobe is missing: parse `ffmpeg -i` stderr.
+
+	ffmpeg is always available (imageio bundles it), so this guarantees we can
+	get dimensions / fps / HDR tags even on a stripped PATH. ffmpeg exits
+	non-zero here (no output file) — that's expected; we only want the banner.
+	"""
+	exe = ffmpeg_exe()
+	if not exe:
+		return {}
+	txt = subprocess.run([exe, "-hide_banner", "-i", path],
+						 capture_output=True, text=True).stderr
+	vline = next((ln for ln in txt.splitlines() if "Video:" in ln), "")
+	if not vline:
+		return {}
+	got = {}
+	m = re.search(r"\b(\d{2,5})x(\d{2,5})\b", vline)
+	if m:
+		got["width"], got["height"] = int(m.group(1)), int(m.group(2))
+	m = re.search(r"(\d+(?:\.\d+)?)\s*fps", vline)
+	if m:
+		got["fps"] = float(m.group(1))
+	low = vline.lower()
+	if "smpte2084" in low:
+		got["color_transfer"] = "smpte2084"
+	elif "arib-std-b67" in low or "hlg" in low:
+		got["color_transfer"] = "arib-std-b67"
+	if "bt2020" in low:
+		got["color_primaries"] = "bt2020"
+	return got
 
 
 def probe(path):
@@ -43,6 +101,8 @@ def probe(path):
 			"color_primaries": "", "duration": 0.0}
 	fp = ffprobe_exe()
 	if not fp:
+		# No ffprobe on this box — get what we can from ffmpeg instead.
+		info.update(_probe_via_ffmpeg(path))
 		return info
 	try:
 		out = subprocess.run(
@@ -67,6 +127,12 @@ def probe(path):
 		info["duration"] = float(st.get("duration") or 0.0)
 	except Exception as exc:  # noqa: BLE001
 		print(f"[tinode] ffprobe failed on {path!r}: {exc!r}")
+
+	# ffprobe present but returned nothing useful (odd container, error) — fill
+	# the gaps from ffmpeg so decode still knows the dimensions.
+	if not info["width"] or not info["height"]:
+		for k, v in _probe_via_ffmpeg(path).items():
+			info[k] = info[k] or v
 	return info
 
 
