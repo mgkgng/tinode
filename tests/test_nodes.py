@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import time
+from fractions import Fraction
 
 import torch
 
@@ -48,6 +49,10 @@ from tinode.nodes.data.json_to_item_list import (  # noqa: E402
 )
 from tinode.nodes.data.json_path import (  # noqa: E402
 	INDEX, KEY, JsonPath, parse_path, render_path,
+)
+from tinode.nodes.image.video_concat import (  # noqa: E402
+	Combined, ConcatenatedVideo, VideoConcatenate, audio_sample_count, combine,
+	fit_audio, fit_channels, flatten, is_video, retime_indices,
 )
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
@@ -79,6 +84,185 @@ def test_registry_ids_are_namespaced_and_unique():
 	for nid, cls in tinode.NODE_CLASS_MAPPINGS.items():
 		assert hasattr(cls, "INPUT_TYPES") and hasattr(cls, "RETURN_TYPES"), nid
 		assert hasattr(cls, cls.FUNCTION), f"{nid} has no {cls.FUNCTION}()"
+
+
+# ------------------------------------------------------------- video concat
+class _Comp:
+	"""Stand-in for VideoComponents (comfy_api is not importable in tests)."""
+
+	def __init__(self, images, frame_rate, audio=None):
+		self.images = images
+		self.frame_rate = frame_rate
+		self.audio = audio
+
+
+class _FakeVideo:
+	"""Stand-in for a native VIDEO: duck-typed, like is_video() expects."""
+
+	def __init__(self, n, fps=24, h=8, w=6, audio_sr=None, value=None, channels=1):
+		base = torch.arange(n, dtype=torch.float32) if value is None else torch.full((n,), float(value))
+		self.images = base.view(n, 1, 1, 1).expand(n, h, w, 3).contiguous()
+		self.frame_rate = Fraction(fps)
+		self.audio = None
+		if audio_sr:
+			samples = audio_sample_count(n, self.frame_rate, audio_sr)
+			# a ramp, so a mis-ordered or mis-padded join is visible
+			wave = torch.linspace(0.1, 0.9, samples).repeat(channels, 1)
+			self.audio = {"waveform": wave.unsqueeze(0), "sample_rate": audio_sr}
+
+	def get_components(self):
+		return _Comp(self.images, self.frame_rate, self.audio)
+
+	def save_to(self, *a, **k):
+		raise AssertionError("save_to should not be called in these tests")
+
+	def get_frame_rate(self):
+		return self.frame_rate
+
+	def get_dimensions(self):
+		return self.images.shape[2], self.images.shape[1]
+
+	def get_bit_depth(self):
+		return 8
+
+
+def test_video_concat_passthrough_without_accumulator():
+	b = _FakeVideo(4)
+	# unconnected video_a
+	assert _unwrap(VideoConcatenate().execute(b))[0] is b
+	# ...and the Inspire loop's seed: ForeachListBegin hands initial_input
+	# through as the first intermediate_output, and it is NOT a video.
+	for seed in (None, "step one", 0, ["a"], {"a": 1}):
+		assert _unwrap(VideoConcatenate().execute(b, video_a=seed))[0] is b
+	# video_b must be real, though — that one is a wiring mistake
+	try:
+		VideoConcatenate().execute("not a video")
+	except ValueError:
+		pass
+	else:
+		raise AssertionError("accepted a non-VIDEO video_b")
+	assert is_video(b) and not is_video("x") and not is_video(None)
+
+
+def test_video_concat_is_a_hard_cut_in_order():
+	a, b = _FakeVideo(3, value=1), _FakeVideo(2, value=2)
+	out = combine([a.get_components(), b.get_components()])
+	assert out.images.shape[0] == 5                       # nothing lost, nothing added
+	assert out.frame_rate == Fraction(24)
+	# chronological, and every output frame is an untouched input frame:
+	# no blended/duplicated transition frame at the boundary.
+	assert [float(f[0, 0, 0]) for f in out.images] == [1, 1, 1, 2, 2]
+
+
+def test_video_concat_retimes_to_the_first_clips_rate():
+	# 24 fps accumulator, 12 fps addition: the 12 fps clip must keep its
+	# duration (2s), so it doubles to 48 frames by repeating, never blending.
+	assert retime_indices(10, Fraction(24), Fraction(24)) is None
+	idx = retime_indices(24, Fraction(12), Fraction(24))
+	assert len(idx) == 48
+	assert idx == sorted(idx) and set(idx) == set(range(24))   # only repeats
+	# and dropping frames the other way
+	assert len(retime_indices(24, Fraction(24), Fraction(12))) == 12
+
+	a, b = _FakeVideo(24, fps=24), _FakeVideo(24, fps=12)
+	out = combine([a.get_components(), b.get_components()])
+	assert out.images.shape[0] == 24 + 48
+	assert out.frame_rate == Fraction(24)
+	# duration preserved: 1s + 2s
+	assert abs(out.images.shape[0] / float(out.frame_rate) - 3.0) < 1e-9
+	# every frame of the retimed part is still one of its source frames
+	tail = {float(f[0, 0, 0]) for f in out.images[24:]}
+	assert tail == set(range(24))
+
+
+def test_video_concat_keeps_audio_in_sync():
+	sr = 100
+	a = _FakeVideo(10, fps=10, audio_sr=sr)      # 1.0 s
+	b = _FakeVideo(5, fps=10, audio_sr=sr)       # 0.5 s
+	out = combine([a.get_components(), b.get_components()])
+	assert out.images.shape[0] == 15
+	# audio covers exactly the video duration — no drift
+	assert out.audio["waveform"].shape[-1] == audio_sample_count(15, Fraction(10), sr) == 150
+	assert out.audio["sample_rate"] == sr
+
+
+def test_video_concat_fills_silence_for_a_clip_without_audio():
+	sr = 100
+	loud = _FakeVideo(10, fps=10, audio_sr=sr)
+	mute = _FakeVideo(10, fps=10)
+	out = combine([loud.get_components(), mute.get_components()])
+	w = out.audio["waveform"][0]
+	assert w.shape[-1] == 200                          # video timing unchanged
+	assert w[..., 100:].abs().max() == 0               # second half is silence
+	assert w[..., :100].abs().max() > 0
+
+	# and the other way round: silence goes FIRST, audio stays with its clip
+	out = combine([mute.get_components(), loud.get_components()])
+	w = out.audio["waveform"][0]
+	assert w.shape[-1] == 200
+	assert w[..., :100].abs().max() == 0
+	assert w[..., 100:].abs().max() > 0
+
+
+def test_video_concat_audio_is_fitted_to_its_own_clip():
+	# audio that runs short is padded and audio that overruns is trimmed, so a
+	# bad clip cannot desync everything after it
+	assert fit_audio(torch.ones(1, 30), 50, 1).shape == (1, 50)
+	assert float(fit_audio(torch.ones(1, 30), 50, 1)[0, 40]) == 0.0
+	assert fit_audio(torch.ones(1, 80), 50, 1).shape == (1, 50)
+	# mono upmixes to stereo by duplication rather than losing a channel
+	up = fit_audio(torch.ones(1, 10), 10, 2)
+	assert up.shape == (2, 10) and float(up[1, 0]) == 1.0
+	assert fit_audio(torch.ones(2, 10), 10, 1).shape == (1, 10)
+	# a mismatched sample rate is resampled, keeping the clip's duration
+	sr_a, sr_b = 200, 100
+	a = _FakeVideo(10, fps=10, audio_sr=sr_a)
+	b = _FakeVideo(10, fps=10, audio_sr=sr_b)
+	out = combine([a.get_components(), b.get_components()])
+	assert out.audio["sample_rate"] == sr_a
+	assert out.audio["waveform"].shape[-1] == audio_sample_count(20, Fraction(10), sr_a) == 400
+
+
+def test_video_concat_rejects_a_resolution_mismatch():
+	# silently rescaling would be worse than refusing: the whole clip would
+	# inherit one step's wrong geometry
+	a, b = _FakeVideo(2, h=8, w=6), _FakeVideo(2, h=8, w=7)
+	try:
+		combine([a.get_components(), b.get_components()])
+	except ValueError as exc:
+		assert "7x8" in str(exc) and "6x8" in str(exc), exc
+	else:
+		raise AssertionError("accepted mismatched resolutions")
+
+
+def test_video_concat_normalizes_channels_and_dtype():
+	rgba = _FakeVideo(2)
+	rgba.images = torch.ones(2, 8, 6, 4, dtype=torch.float64)
+	out = combine([_FakeVideo(2).get_components(), rgba.get_components()])
+	assert out.images.shape == (4, 8, 6, 3) and out.images.dtype == torch.float32
+	assert fit_channels(torch.ones(1, 2, 2, 1)).shape[-1] == 3
+
+
+def test_video_concat_accumulates_flat_across_a_loop():
+	# The loop shape: video_a = previous result, video_b = this step's clip.
+	# Parts must stay a flat list — nesting would recurse once per step.
+	acc = None
+	for step in range(5):
+		clip = _FakeVideo(2, value=step)
+		acc = _unwrap(VideoConcatenate().execute(clip, video_a=acc))[0]
+	assert isinstance(acc, ConcatenatedVideo)
+	assert len(acc.parts) == 5
+	assert all(not isinstance(p, ConcatenatedVideo) for p in acc.parts)
+	assert flatten(acc) == acc.parts
+
+	# ...and it is lazy: nothing was decoded or copied while looping
+	assert acc._components is None
+	c = acc._combined()
+	assert isinstance(c, Combined) and c.images.shape[0] == 10
+	assert [float(f[0, 0, 0]) for f in c.images] == [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]
+	assert acc._components is c                        # materialized once, cached
+	# cheap metadata needs no decode
+	assert acc.get_dimensions() == (6, 8) and acc.get_frame_rate() == Fraction(24)
 
 
 # --------------------------------------------------------- json → item list

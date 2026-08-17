@@ -122,8 +122,77 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 ### `tinode/video`
 | Node | Does |
 |---|---|
+| **Video Concatenate** | Append one native `VIDEO` after another — hard cut, audio kept in sync. Built to accumulate a clip per iteration across a Foreach loop. |
 | **Load Video** | Decode a file from `input/` to an IMAGE batch via ffmpeg (frame cap / skip / every-nth / force-rate / resize). Faithful colour by default; `force_full_range` fixes a mis-tagged clip. Outputs images, frame count, fps. |
 | **Save Video · Combine** | Encode an IMAGE batch to mp4 / webm / lossless PNG frames via ffmpeg, with the colour controls (`color_range`, `colorspace`, `pix_fmt`, `crf`) that keep a grade intact. Previews in the node. |
+
+#### Video Concatenate
+
+The only node here that speaks ComfyUI's **native `VIDEO`** type (`comfy_api`'s
+`VideoInput`) rather than an IMAGE batch — in, out, and all the way to
+`SaveVideo`. Load/Save Video above are the ffmpeg IMAGE-batch pair; this is a
+different world, don't mix them up.
+
+Its reason to exist is accumulating one clip per iteration of Inspire's
+**▶Foreach List**:
+
+```
+ForeachListBegin.intermediate_output ──► video_a ┐
+                                                 ├─ Video Concatenate ──► ForeachListEnd.intermediate_output
+        this iteration's generated VIDEO ──► video_b ┘
+
+ForeachListEnd.result ──► SaveVideo          (one file, one encode, at the end)
+```
+
+**Seed `ForeachListBegin.initial_input` or you will silently lose step 1.**
+This is not about this node — it is how Inspire's loop starts:
+
+```python
+if initial_input is None:
+    initial_input = item_list[0]   # your first item becomes the seed...
+    item_list = item_list[1:]      # ...and is never iterated
+```
+
+So leave it unconnected and the first item is eaten as the accumulator's initial
+value instead of being processed. Connect **any** value — an `Int` primitive set
+to 0 is fine — and all N items iterate. Video Concatenate treats a non-`VIDEO`
+`video_a` as "no accumulator yet" and passes `video_b` straight through, so the
+seed never has to be a real video, and there is no empty-video node to fake.
+Verified against Inspire's actual `ForeachListBegin`, 5 recipe steps:
+
+```
+initial_input SEEDED  : steps generated [1, 2, 3, 4, 5]   30 frames, 1.250s
+initial_input EMPTY   : steps generated [2, 3, 4, 5]      24 frames, 1.000s   <-- step 1 gone
+```
+
+**Appending is lazy.** The output holds an ordered list of its parts; nothing is
+decoded, copied, or re-encoded until something asks for pixels. Concatenating
+tensors on every iteration instead would re-copy the whole accumulated clip once
+per step — O(N²) memcpy, with a 2x memory spike each time. Here the single copy
+happens once, when `SaveVideo` materializes the result. Parts stay a **flat**
+list, so iteration N does not nest N videos deep.
+
+**A hard cut, in every stream.** Every output frame is one input frame,
+untouched — no interpolation, crossfade, or duplicated transition frame. Decode
+a 5-clip join back and you get exactly 5 runs of identical frames, no
+in-between. Specifically:
+
+- **Frame rate** — a clip whose rate differs from `video_a`'s is retimed by
+  nearest-neighbour index mapping: frames repeat or drop, never blend. Its
+  duration survives (24fps + 2s of 12fps → 72 frames, 3.000s).
+- **Audio** — each part's audio is fitted to *that part's own* video duration
+  before joining, padded with silence or trimmed. A part with no audio gets
+  silence rather than a shorter slot, so it cannot shift everything after it out
+  of sync. Sample rates are resampled to the first audio-bearing part's rate;
+  mono upmixes to stereo by duplication rather than losing a channel.
+- **Resolution** — a mismatch **raises**. Silently rescaling would give the
+  whole recipe one step's wrong geometry; the error tells you which clip differs
+  and by how much.
+
+Frames are materialized as CPU float32 — a growing accumulator has no business
+sitting in VRAM. Nothing is written to disk: `save_to()` delegates the encode to
+core's `VideoFromComponents`, so the file is exactly what `Create Video` →
+`Save Video` would have produced.
 
 These exist so the pack can load and save video without a separate video-nodes
 install. They are **not** 1:1 VHS clones — no audio, no in-browser upload (drop
