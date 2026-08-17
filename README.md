@@ -152,6 +152,83 @@ YUV↔RGB conversion. Two rules:
   file the way it was graded. For a lossless intermediate, save **PNG frames**
   (no colour conversion, no compression) and mux to video yourself.
 
+### `tinode/data`
+| Node | Does |
+|---|---|
+| **JSON Path** | Read one value out of a JSON document by path — keys *and* indices: `steps[0].prompt`. |
+| **JSON To Item List** | Split a JSON array into one item per element — `[{"a":1},{"a":2}]` gives 2 items. |
+
+They chain: **JSON Path** `steps` → **JSON To Item List** → **▶Foreach List**.
+
+#### JSON Path
+
+Every accessor form, including the ones Simple JSON Parser cannot express:
+
+| Path | Reaches |
+|---|---|
+| `steps[0].prompt` | key, then index, then key |
+| `a.b.c` | nested keys |
+| `-1` | a bare index — negative counts from the end |
+| `[0].name` | a leading index (the document itself is an array) |
+| `a[0][2]` | chained indices |
+| `["key.with.dots"]` | a quoted key, for keys containing a dot or bracket |
+| *(empty)* | the whole document |
+
+Outputs `value` (strings unquoted, objects/arrays as JSON text), `count` (length
+for an array or object, else `-1`) and `type` (`object`/`array`/`string`/
+`number`/`boolean`/`null`).
+
+Two rules that keep a wrong path from becoming a silent wrong result:
+
+- A **malformed** path (`a..b`, `a[`) always raises — that's a workflow bug, not
+  data — while a path that simply **isn't there** respects `strict`: raise, or
+  fall back to `default`. So a typo can never quietly hand you your default.
+- Indexing a string is a miss, not a character. `prompt[0]` yielding `"a"` from
+  `"a cat"` hides a wrong path far more often than it helps.
+
+Errors name what was actually available: `key 'nope' not found at the document;
+available: 'steps', 'nested', 'meta'`.
+
+#### Caching
+
+**Both nodes cache**, deliberately. Neither defines `IS_CHANGED`, because both
+are pure functions of their inputs — ComfyUI's own input-signature key is
+already exactly right, so they re-run only when the text or path really changes.
+
+This is the one behavioural difference from **Simple JSON Parser**, which
+returns `float("NaN")` from `IS_CHANGED`. That value is folded straight into the
+cache key (`comfy_execution/caching.py`), and a fresh, never-equal `NaN` is
+minted on every queue — so that node re-executes every single run. Worse, a
+node's key also folds in **all of its ancestors'** signatures, so everything
+downstream of it re-executes too. Verified against the real
+`HierarchicalCache`/`IsChangedCache`: identical inputs → hit on every one of
+these nodes and their children; change only `path` → just JSON Path and its
+children miss; change the document → all miss.
+
+If you *want* a branch to re-run every queue, that's what Inspire's reroute /
+seed-style nodes are for — don't reach for these.
+
+Two outputs, two idioms:
+
+- **`item_list`** is an `ITEM_LIST`, the type Inspire's **▶Foreach List** consumes
+  — a sequential loop that threads an accumulator through each item.
+- **`items`** is a plain ComfyUI list, so every node downstream simply runs once
+  per item, no loop nodes involved.
+
+Inspire's own **Worklist To Item List** goes the other way: it sets
+`INPUT_IS_LIST` to *collapse* a batch ComfyUI already ran per-item back into one
+`ITEM_LIST`, which needs an upstream node that emits a list. Here the array is a
+single string, so there is nothing to collapse — this node builds that same
+payload directly. Nothing is imported from Inspire, so the pack stays optional;
+you only need it if you want the loop nodes.
+
+Items come out as **strings**, since that is what a socket can carry: objects
+and arrays are re-serialized as compact JSON, while string elements pass through
+unquoted (`["cat","dog"]` → `cat`, `dog`). A lone object counts as one item, and
+JSON Lines is accepted as a fallback. Invalid JSON and an **empty array both
+raise** — an empty list makes ▶Foreach List throw an `IndexError`, and makes the
+ComfyUI-list output skip the whole branch in silence.
+
 ### `tinode/face`
 | Node | Does |
 |---|---|

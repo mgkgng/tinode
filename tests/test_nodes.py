@@ -43,6 +43,12 @@ from tinode.nodes.image.pick_segments import (  # noqa: E402
 from tinode.nodes.image.add_segments import AddSegments, _MANUAL_ID_BASE  # noqa: E402
 from tinode.nodes.image.mask_to_segment import MaskToSegment, mask_to_segments  # noqa: E402
 from tinode.nodes.image.delete_segments import DeleteSegments, parse_deleted_items  # noqa: E402
+from tinode.nodes.data.json_to_item_list import (  # noqa: E402
+	JsonToItemList, parse_items,
+)
+from tinode.nodes.data.json_path import (  # noqa: E402
+	INDEX, KEY, JsonPath, parse_path, render_path,
+)
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -73,6 +79,174 @@ def test_registry_ids_are_namespaced_and_unique():
 	for nid, cls in tinode.NODE_CLASS_MAPPINGS.items():
 		assert hasattr(cls, "INPUT_TYPES") and hasattr(cls, "RETURN_TYPES"), nid
 		assert hasattr(cls, cls.FUNCTION), f"{nid} has no {cls.FUNCTION}()"
+
+
+# --------------------------------------------------------- json → item list
+def test_json_to_item_list_splits_objects():
+	out = _unwrap(JsonToItemList().execute('[{"a": 1}, {"a": 2}, {"a": 3}]'))
+	item_list, items, count = out
+	assert count == 3
+	assert items == ['{"a":1}', '{"a":2}', '{"a":3}']
+	# ITEM_LIST is what Inspire's ForeachListBegin consumes: a plain list it
+	# indexes and slices. Must be equal in content but a distinct object.
+	assert item_list == items and item_list is not items
+	# and every item is parseable back into the original object
+	assert [json.loads(i) for i in items] == [{"a": 1}, {"a": 2}, {"a": 3}]
+
+
+def test_json_to_item_list_string_and_scalar_elements():
+	# strings pass through unquoted (a prompt list is the whole point)...
+	_, items, _ = _unwrap(JsonToItemList().execute('["a cat", "un chien"]'))
+	assert items == ["a cat", "un chien"]
+	# ...everything else is compact JSON, non-ASCII kept verbatim
+	_, items, _ = _unwrap(JsonToItemList().execute('[1, true, null, [2], "é"]'))
+	assert items == ["1", "true", "null", "[2]", "é"]
+
+
+def test_json_to_item_list_accepts_object_and_jsonl():
+	assert parse_items('{"a": 1}') == [{"a": 1}]              # lone object
+	assert parse_items('{"a": 1}\n\n{"a": 2}\n') == [{"a": 1}, {"a": 2}]  # jsonl
+	# valid JSON is never reinterpreted as JSONL, even spread over lines
+	assert parse_items('[\n{"a": 1},\n{"a": 2}\n]') == [{"a": 1}, {"a": 2}]
+
+
+def test_json_to_item_list_rejects_junk_and_empty():
+	# An empty list would make ForeachList raise IndexError and would make the
+	# ComfyUI-list output silently skip the branch — both must fail loudly here.
+	for bad in ("", "   ", "[]", "not json", "[{,}]", '"a string"', "5"):
+		try:
+			JsonToItemList().execute(bad)
+		except ValueError:
+			continue
+		raise AssertionError(f"accepted junk input: {bad!r}")
+
+
+def test_json_to_item_list_output_contract():
+	# item_list is a single value, items is a ComfyUI list — the flags must say so.
+	assert JsonToItemList.RETURN_TYPES == ("ITEM_LIST", "STRING", "INT")
+	assert JsonToItemList.OUTPUT_IS_LIST == (False, True, False)
+
+
+# ------------------------------------------------------------------ json path
+_DOC = json.dumps({
+	"steps": [{"prompt": "a cat", "cfg": 7.5}, {"prompt": "un chien", "cfg": 3}],
+	"nested": {"grid": [[1, 2], [3, 4]]},
+	"meta": {"key.with.dots": "reached", "flag": True, "none": None},
+})
+
+
+def test_json_path_parses_keys_and_indices():
+	assert parse_path("") == []
+	assert parse_path("a.b.c") == [(KEY, "a"), (KEY, "b"), (KEY, "c")]
+	assert parse_path("steps[0]") == [(KEY, "steps"), (INDEX, 0)]
+	assert parse_path("a[0][2]") == [(KEY, "a"), (INDEX, 0), (INDEX, 2)]
+	assert parse_path("[0].name") == [(INDEX, 0), (KEY, "name")]
+	assert parse_path("-1") == [(INDEX, -1)]            # bare negative index
+	assert parse_path('["a.b"]') == [(KEY, "a.b")]      # quoted key keeps its dots
+	assert parse_path(" steps [ 0 ] ") == [(KEY, "steps"), (INDEX, 0)]
+	# round trip back to text, used in the error messages
+	for p in ("a.b.c", "steps[0]", "a[0][2]", "[0].name"):
+		assert render_path(parse_path(p)) == p
+
+
+def test_json_path_rejects_malformed_paths():
+	for bad in ("a..b", ".a", "a.", "a[", "a[]", "a[x]", "[0]b", "a[1.5]", "."):
+		try:
+			parse_path(bad)
+		except ValueError:
+			continue
+		raise AssertionError(f"accepted malformed path: {bad!r}")
+
+
+def test_json_path_extracts_values():
+	def v(path, **kw):
+		return _unwrap(JsonPath().execute(_DOC, path, **kw))
+
+	# the case Simple JSON Parser is built for
+	assert v("steps[0].prompt") == ("a cat", -1, "string")
+	# ...and the cases it cannot express
+	assert v("nested.grid[1][0]") == ("3", -1, "number")       # chained indices
+	assert v("steps[-1].prompt") == ("un chien", -1, "string")  # negative index
+	assert v('meta["key.with.dots"]') == ("reached", -1, "string")
+	# a leading index, against an array document
+	assert _unwrap(JsonPath().execute('[{"a": 1}, 2]', "[0].a")) == ("1", -1, "number")
+	assert _unwrap(JsonPath().execute('[{"a": 1}, 2]', "-1")) == ("2", -1, "number")
+
+	# counts, and JSON out for containers
+	assert v("steps")[1] == 2 and v("steps")[2] == "array"
+	assert v("meta")[1] == 3 and v("meta")[2] == "object"
+	assert v("")[2] == "object"                                # empty = whole doc
+	# JSON literals, not Python repr — str(None) would be "None"
+	assert v("meta.flag")[0] == "true"
+	assert v("meta.none") == ("null", -1, "null")
+	# non-ASCII survives, and the value re-parses into the original object
+	assert json.loads(v("steps[0]")[0]) == {"prompt": "a cat", "cfg": 7.5}
+
+
+def test_json_path_strict_and_default():
+	# strict (default): a miss is a loud error, naming what was available
+	for miss in ("steps[9]", "nope", "steps[0].nope", "meta.flag.deeper", "steps.0x"):
+		try:
+			JsonPath().execute(_DOC, miss)
+		except ValueError:
+			continue
+		raise AssertionError(f"missing path did not raise: {miss!r}")
+	try:
+		JsonPath().execute(_DOC, "nope")
+	except ValueError as exc:
+		assert "available" in str(exc) and "steps" in str(exc), exc
+
+	# strict off: fall back instead of raising
+	assert _unwrap(JsonPath().execute(_DOC, "steps[9]", strict=False,
+									default="fallback")) == ("fallback", -1, "missing")
+	# but a MALFORMED path still raises even with strict off — a typo must never
+	# quietly return the default.
+	try:
+		JsonPath().execute(_DOC, "a..b", strict=False, default="x")
+	except ValueError:
+		pass
+	else:
+		raise AssertionError("malformed path was swallowed by strict=False")
+
+	# bad document / empty text always raise
+	for bad_doc in ("", "   ", "not json"):
+		try:
+			JsonPath().execute(bad_doc, "a", strict=False)
+		except ValueError:
+			continue
+		raise AssertionError(f"accepted bad document: {bad_doc!r}")
+
+
+def test_json_path_indexing_a_string_is_a_miss_not_a_character():
+	# "a cat"[0] == "a" would hide a wrong path; it must be reported instead.
+	assert _unwrap(JsonPath().execute(_DOC, "steps[0].prompt[0]", strict=False,
+									default="-")) == ("-", -1, "missing")
+
+
+def test_data_nodes_are_cacheable():
+	# The whole point of these two vs Simple JSON Parser: no IS_CHANGED, so
+	# ComfyUI's input-signature cache key works and the node (plus everything
+	# downstream of it) is not re-executed on every queue.
+	for cls in (JsonPath, JsonToItemList):
+		assert not hasattr(cls, "IS_CHANGED"), f"{cls.__name__} defeats the cache"
+		assert not hasattr(cls, "fingerprint_inputs"), cls.__name__
+		assert not getattr(cls, "NOT_IDEMPOTENT", False), cls.__name__
+		# same inputs -> same outputs, which is what makes caching correct
+		a = _unwrap(cls().execute(_DOC, "steps") if cls is JsonPath
+					else cls().execute('[{"a": 1}]'))
+		b = _unwrap(cls().execute(_DOC, "steps") if cls is JsonPath
+					else cls().execute('[{"a": 1}]'))
+		assert a == b
+
+
+def test_json_path_feeds_json_to_item_list():
+	# The intended chain: pull the array out, then split it into items.
+	value, count, kind = _unwrap(JsonPath().execute(_DOC, "steps"))
+	assert kind == "array" and count == 2
+	item_list, items, n = _unwrap(JsonToItemList().execute(value))
+	assert n == 2
+	assert [json.loads(i)["prompt"] for i in items] == ["a cat", "un chien"]
+	assert item_list == items
 
 
 # ------------------------------------------------------------ index parsers
