@@ -124,6 +124,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 |---|---|
 | **Video Concatenate** | Append one native `VIDEO` after another — hard cut, audio kept in sync. Built to accumulate a clip per iteration across a Foreach loop. |
 | **Load Video** | Decode a file from `input/` to an IMAGE batch via ffmpeg (frame cap / skip / every-nth / force-rate / resize). Faithful colour by default; `force_full_range` fixes a mis-tagged clip. Outputs images, frame count, fps. |
+| **Load Videos** | Gather many clips from a folder as an Inspire `ITEM_LIST` of **lazy** native `VIDEO`s, to loop over one at a time. `directory` is relative to `input/` or an absolute path; `filenames` (one per line) picks an exact set. Outputs `item_list`, a per-clip `videos` list, and `count`. |
 | **Save Video · Combine** | Encode an IMAGE batch to mp4 / webm / lossless PNG frames via ffmpeg, with the colour controls (`color_range`, `colorspace`, `pix_fmt`, `crf`) that keep a grade intact. Previews in the node. |
 
 #### Video Concatenate
@@ -197,6 +198,40 @@ core's `VideoFromComponents`, so the file is exactly what `Create Video` →
 These exist so the pack can load and save video without a separate video-nodes
 install. They are **not** 1:1 VHS clones — no audio, no in-browser upload (drop
 files in `input/`), no batch manager — they cover the decode/encode path itself.
+
+#### Load Videos — a folder of clips, one iteration each
+
+`Load Video` (singular) decodes **one** file to an IMAGE batch. `Load Videos`
+(plural) is for the other case: you have many clips — possibly gigabytes total —
+and want a loop to process them one at a time.
+
+It scans `directory` and outputs an Inspire **`ITEM_LIST`** of native `VIDEO`s.
+Wire `item_list` into **▶Foreach List** and each iteration's `item` is one clip:
+
+```
+Load Videos.item_list ──► ForeachListBegin.item_list
+                          ForeachListBegin.item ──► (Get Video Components ──► your per-clip graph)
+                                                     ...accumulate with Video Concatenate...
+                          ForeachListEnd.result ──► Save Video   (once, at the end)
+```
+
+**Why this handles ">5GB of video" without exhausting RAM.** Every item is a
+*lazy* `VideoFromFile` — a path, not pixels. The whole list costs almost
+nothing; only the clip the current iteration decodes is ever in memory, and it
+is released before the next. Loading every clip to an IMAGE batch up front would
+instead need the **sum** of all of them at once. The file's size on disk is
+never the wall — decoded frames are (~25 MB per 1080p frame, ~100 MB per 4K
+frame), and the loop keeps that to one clip at a time.
+
+- `directory` — relative to `input/`, or an **absolute** path so you can point
+  straight at a source folder elsewhere without copying gigabytes into `input/`.
+- `filenames` — optional, one per line, to load an exact set in an exact order.
+  Empty loads every video in the folder, sorted by name (`reverse` flips it).
+- `videos` (a ComfyUI list) is the other idiom: wire it anywhere and every
+  downstream node runs once per clip, no Foreach node needed.
+
+The folder is empty-checked and missing named files **raise** — a silently empty
+list makes ▶Foreach List throw and makes a per-item branch skip without a word.
 
 #### Video colour
 

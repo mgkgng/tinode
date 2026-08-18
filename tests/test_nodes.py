@@ -54,6 +54,7 @@ from tinode.nodes.image.video_concat import (  # noqa: E402
 	Combined, ConcatenatedVideo, VideoConcatenate, audio_sample_count, combine,
 	fit_audio, fit_channels, flatten, is_video, retime_indices,
 )
+from tinode.nodes.image.load_videos import resolve_dir, resolve_video_files  # noqa: E402
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -994,6 +995,51 @@ def test_color_for_id_python_and_js_agree():
 	js = [tuple(v) for v in json.loads(out.stdout)]
 	py = [tuple(round(c * 255) for c in color_for_id(i)) for i in ids]
 	assert js == py, f"colour drift!\n  js={js}\n  py={py}"
+
+
+def test_load_videos_scans_folder_sorted():
+	with tempfile.TemporaryDirectory() as d:
+		for name in ("b.mp4", "a.mov", "c.mkv", "notes.txt", "still.png"):
+			open(os.path.join(d, name), "w").close()
+		paths = resolve_video_files("", "", base_dir=d)
+		assert [os.path.basename(p) for p in paths] == ["a.mov", "b.mp4", "c.mkv"]
+		rev = resolve_video_files("", "", reverse=True, base_dir=d)
+		assert [os.path.basename(p) for p in rev] == ["c.mkv", "b.mp4", "a.mov"]
+
+
+def test_load_videos_explicit_filenames_keep_order():
+	with tempfile.TemporaryDirectory() as d:
+		for name in ("a.mp4", "b.mp4", "c.mp4"):
+			open(os.path.join(d, name), "w").close()
+		paths = resolve_video_files("", "c.mp4\na.mp4", base_dir=d)
+		assert [os.path.basename(p) for p in paths] == ["c.mp4", "a.mp4"]
+
+
+def test_load_videos_missing_named_file_errors():
+	with tempfile.TemporaryDirectory() as d:
+		open(os.path.join(d, "a.mp4"), "w").close()
+		try:
+			resolve_video_files("", "a.mp4\nghost.mp4", base_dir=d)
+		except RuntimeError as exc:
+			assert "ghost.mp4" in str(exc)
+		else:
+			raise AssertionError("expected a RuntimeError for the missing file")
+
+
+def test_load_videos_absolute_dir_is_used_as_is():
+	with tempfile.TemporaryDirectory() as d:
+		# An absolute `directory` must ignore base_dir entirely.
+		assert resolve_dir(d, base_dir="/nonexistent/input") == d
+
+
+def test_load_videos_empty_folder_errors():
+	with tempfile.TemporaryDirectory() as d:
+		try:
+			resolve_video_files("", "", base_dir=d)
+		except RuntimeError as exc:
+			assert "no video files" in str(exc)
+		else:
+			raise AssertionError("expected a RuntimeError for an empty folder")
 
 
 # ------------------------------------------------------------------ runner
