@@ -88,7 +88,8 @@ against, so it is never silently re-applied to a different clip.
 | **Mask Bbox Crop** | Crop to a mask's bounding box + padding, rounded to `divisible_by`. Per-frame boxes are temporally smoothed so the crop stops swimming; `shared_bbox` gives one static box instead. |
 | **Mask Crop · Center Fill** | Crop each mask onto its own square black canvas, scaled to fill — for crowd → per-face pipelines. |
 | **Bbox Crop · Manual** | Interactive crop (above). |
-| **Mask Crop Paste Back** | Composite processed crops back using `crop_info`. Blends through an optional mask, feathered. |
+| **Crop By Info** | Re-cut the exact crop a saved `crop_info` describes (the forward of Paste Back) — a native-scale slice, bit-exact, no coords to re-enter. Rejects rescaled crop_info rather than resample. |
+| **Mask Crop Paste Back** | Composite processed crops back using `crop_info`. Blends through an optional mask, `gaussian`/`box` feathered; **bit-exact outside the mask**, and no resample when the crop isn't rescaled. |
 
 > **The one rule for Paste Back:** its `image` must be the **original frame the
 > crop node consumed**, never the crop node's output. `crop_info` coordinates
@@ -126,6 +127,10 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Load Video** | Decode a file from `input/` to an IMAGE batch via ffmpeg (frame cap / skip / every-nth / force-rate / resize). Faithful colour by default; `force_full_range` fixes a mis-tagged clip. Outputs images, frame count, fps. |
 | **Load Videos** | Gather many clips from a folder as an Inspire `ITEM_LIST` of **lazy** native `VIDEO`s, to loop over one at a time. `directory` is relative to `input/` or an absolute path; `pattern` filters by wildcard (`*.mp4`, `PROJECT_AMIR_*`); `filenames` (one per line, exact or wildcard) picks an exact set. Outputs `item_list`, a per-clip `videos` list, and `count`. |
 | **Save Video · Combine** | Encode an IMAGE batch to mp4 / webm / lossless PNG frames via ffmpeg, with the colour controls (`color_range`, `colorspace`, `pix_fmt`, `crf`) that keep a grade intact. Previews in the node. |
+| **Video Source Path** | The file a native `VIDEO` was loaded from → `stem` / `filename` / `path`. Keys a clip's saved artifacts inside a Foreach loop. |
+| **Save Masks** | Phase 1 of batch removal: write a clip's mask (lossless PNG, crop space) + its `crop_info` + a manifest, keyed by `stem`, under `output/<subdir>/`. The source video is never re-encoded. |
+| **Load Masks** | Phase 2: scan the mask store → an Inspire `ITEM_LIST`, one item per clip. `source_dir` re-locates moved footage. |
+| **Load Mask** | Inside the phase-2 loop: one item → `video` (original, re-decoded) + `mask` (crop space) + `crop_info` + `stem`. |
 
 #### Video Concatenate
 
@@ -237,6 +242,62 @@ frame), and the loop keeps that to one clip at a time.
 
 The folder is empty-checked and missing named files **raise** — a silently empty
 list makes ▶Foreach List throw and makes a per-item branch skip without a word.
+
+#### Two-workflow object removal (mask now, remove later)
+
+For removing an object across many clips, split the work in two passes with a
+disk handoff — so masking (light, reviewable) and removal (heavy, unattended)
+don't have to run together, and a crash mid-batch never re-does finished work.
+
+**Phase 1 — author masks** (loop over `Load Videos`):
+```
+item(VIDEO) ─┬─► Get Video Components ─► Bbox Crop · Manual ─► SAM3 ─► … ─► mask
+             │                                    └─────────► crop_info ─┐
+             └─► Video Source Path ─► stem ──────────────────────────────┤
+                                                     mask + crop_info + stem ─► Save Masks ─► ForeachListEnd
+```
+`Save Masks` writes, per clip under `output/ti_masks/<stem>/`: the mask as a
+**lossless** PNG sequence in crop space, the `crop_info`, and a manifest. The
+source is never re-encoded.
+
+**Phase 2 — remove + paste back** (loop over `Load Masks`):
+```
+item ─► Load Mask ─┬─ video ─► Get Video Components ─► frames ─┬─► Crop By Info ─► [ your removal model + mask ] ─► filled crop ─┐
+                   ├─ crop_info ──────────────────────────────┼──────────────────────────────────────────────────────────────┤
+                   └─ mask ───────────────────────────────────┘                                     frames + filled + crop_info + mask ─► Mask Crop Paste Back ─► Save Video
+```
+`Crop By Info` reproduces phase 1's exact crop (bit-exact); `Mask Crop Paste
+Back` composites the filled crop back through the mask — everything outside the
+mask stays the untouched original, so there is no crop-rectangle seam.
+
+**No quality loss anywhere in the chain:** masks are lossless PNG, crops and
+paste-back are native-scale tensor ops (no resample unless you rescale), and the
+source is only ever decoded, never re-encoded. The single lossy step in the
+whole system is the *final* `Save Video` encode — set it to `png` frames or
+`crf 0` + `yuv444p` for a lossless master.
+
+#### Paste-back quality — is it the best for 4K?
+
+For **video** object removal, a **feathered alpha composite over the untouched
+original** (what Paste Back does) is the right default, and better than the
+fancier options for this job:
+
+- **Feathered alpha (default).** Only the masked hole is written; every other
+  pixel is bit-exact original, so no global colour shift and nothing to seam.
+  It is deterministic per frame, so it does **not** flicker. Use `gaussian`
+  feather at 4K for a smoother edge than `box`.
+- **Laplacian (multi-band) blending.** Great for compositing two *different*
+  images across a long seam (panorama stitching). For removal, if your inpainter
+  fills plausibly it buys little, and applied per-frame it can smear
+  high-frequency detail near the edge. Worth it only as a *narrow-band* edge
+  refiner when a residual tone step remains — say the word and it's a bolt-on.
+- **Poisson (seamless cloning).** **Not recommended for video.** Solving each
+  frame independently in the gradient domain drifts frame-to-frame → **flicker**,
+  can bleed colour across strong edges, and is expensive at 4K.
+
+Bottom line: get the *fill* right (a temporally-aware video inpainter) and a
+feathered alpha composite is professional-grade. The blend is not where 4K
+quality is won or lost — the inpainter and staying lossless are.
 
 #### Video colour
 

@@ -55,6 +55,10 @@ from tinode.nodes.image.video_concat import (  # noqa: E402
 	fit_audio, fit_channels, flatten, is_video, retime_indices,
 )
 from tinode.nodes.image.load_videos import resolve_dir, resolve_video_files  # noqa: E402
+from tinode.nodes.image.crop_apply import CropByInfo  # noqa: E402
+from tinode.nodes.image.video_source_path import video_source_path  # noqa: E402
+from tinode.nodes.image import _mask_store as _mstore  # noqa: E402
+from tinode.nodes.image.load_masks import scan_store, load_mask_frames  # noqa: E402
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -1101,6 +1105,104 @@ def test_load_videos_empty_folder_errors():
 			assert "no video files" in str(exc)
 		else:
 			raise AssertionError("expected a RuntimeError for an empty folder")
+
+
+def test_crop_by_info_reproduces_the_manual_crop():
+	img = torch.rand(4, 120, 160, 3)
+	crop, info = BboxCropManual().execute(img, x=20, y=10, width=64, height=48)
+	(back,) = CropByInfo().execute(img, info)
+	assert torch.equal(back, crop), "Crop By Info must reproduce the crop exactly"
+
+
+def test_paste_back_full_mask_is_bit_exact_identity():
+	# Crop then paste the SAME pixels back through a full mask: the frame must
+	# be bit-for-bit the original — the "no quality loss" guarantee.
+	img = torch.rand(3, 100, 128, 3)
+	crop, info = BboxCropManual().execute(img, x=16, y=8, width=48, height=40)
+	full_mask = torch.ones(3, 40, 48)
+	(out,) = MaskCropPasteBack().execute(img, crop, info, masks=full_mask, feather=0)
+	assert torch.equal(out, img), "identity paste-back must not alter any pixel"
+
+
+def test_paste_back_leaves_outside_mask_untouched():
+	# A generated crop replaces only the masked region; everything else stays
+	# bit-exact original, so there is never a crop-rectangle seam.
+	img = torch.rand(1, 80, 80, 3)
+	crop, info = BboxCropManual().execute(img, x=10, y=10, width=40, height=40)
+	gen = torch.zeros_like(crop)                      # "removed" fill
+	mask = torch.zeros(1, 40, 40)
+	mask[:, 8:32, 8:32] = 1.0                         # only an inner square
+	(out,) = MaskCropPasteBack().execute(img, gen, info, masks=mask, feather=0)
+	# outside the crop entirely: identical
+	assert torch.equal(out[:, :10, :, :], img[:, :10, :, :])
+	# inside the crop but outside the mask: still identical
+	assert torch.equal(out[0, 10:18, 10:50, :], img[0, 10:18, 10:50, :])
+	# inside the mask: replaced by the fill
+	assert torch.equal(out[0, 18:42, 18:42, :], gen[0, 8:32, 8:32, :])
+
+
+def test_paste_back_gaussian_feather_runs_and_blends():
+	img = torch.rand(1, 60, 60, 3)
+	crop, info = BboxCropManual().execute(img, x=10, y=10, width=32, height=32)
+	gen = torch.zeros_like(crop)
+	mask = torch.zeros(1, 32, 32)
+	mask[:, 8:24, 8:24] = 1.0
+	(g,) = MaskCropPasteBack().execute(img, gen, info, masks=mask, feather=4,
+									   feather_mode="gaussian")
+	(b,) = MaskCropPasteBack().execute(img, gen, info, masks=mask, feather=4,
+									   feather_mode="box")
+	assert g.shape == img.shape and b.shape == img.shape
+	assert torch.isfinite(g).all()
+	# feathering must actually soften — the hard-edged (feather 0) result differs
+	(hard,) = MaskCropPasteBack().execute(img, gen, info, masks=mask, feather=0)
+	assert not torch.equal(g, hard)
+
+
+def test_crop_by_info_rejects_rescaled_xform():
+	info = {"H": 100, "W": 100, "C": 3, "items": [
+		{"y0": 0, "x0": 0, "h": 20, "w": 20, "oy": 4, "ox": 4, "nh": 12, "nw": 12}]}
+	try:
+		CropByInfo().execute(torch.rand(1, 100, 100, 3), info)
+	except RuntimeError as exc:
+		assert "rescaled" in str(exc)
+	else:
+		raise AssertionError("expected Crop By Info to reject a rescaled crop_info")
+
+
+def test_mask_store_roundtrip(tmp_path=None):
+	import numpy as np
+	from PIL import Image
+
+	with tempfile.TemporaryDirectory() as root:
+		stem = "CLIP A"
+		cdir = _mstore.clip_dir(root, stem)
+		mdir = _mstore.mask_dir(cdir)
+		os.makedirs(mdir)
+		# three binary mask frames
+		for i in range(3):
+			a = np.zeros((8, 12), dtype=np.uint8)
+			a[i:i + 2, :] = 255
+			Image.fromarray(a, mode="L").save(os.path.join(mdir, _mstore.MASK_PATTERN % i))
+		_mstore.write_manifest(cdir, {
+			"tinode_mask_manifest": 1, "stem": stem, "source_path": "",
+			"frame_count": 3, "crop_height": 8, "crop_width": 12,
+			"mask_subfolder": "mask", "mask_pattern": _mstore.MASK_PATTERN,
+			"crop_info": {"H": 20, "W": 30, "C": 3, "items": [None]},
+		})
+		items = scan_store(root)
+		assert len(items) == 1 and items[0]["stem"] == stem
+		m = load_mask_frames(items[0]["mask_dir"], _mstore.MASK_PATTERN, 3)
+		assert tuple(m.shape) == (3, 8, 12)
+		assert m.max() == 1.0 and m.min() == 0.0     # exact 8-bit round trip
+
+
+def test_video_source_path_extracts_stem():
+	class FakeVideo:
+		def get_stream_source(self):
+			return "/x/y/dicaire/DICAIRE T 01 pour test IA.mp4"
+
+	assert video_source_path(FakeVideo()) == "/x/y/dicaire/DICAIRE T 01 pour test IA.mp4"
+	assert video_source_path(object()) is None       # not file-backed
 
 
 # ------------------------------------------------------------------ runner
