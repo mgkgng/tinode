@@ -124,7 +124,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 |---|---|
 | **Video Concatenate** | Append one native `VIDEO` after another — hard cut, audio kept in sync. Built to accumulate a clip per iteration across a Foreach loop. |
 | **Load Video** | Decode a file from `input/` to an IMAGE batch via ffmpeg (frame cap / skip / every-nth / force-rate / resize). Faithful colour by default; `force_full_range` fixes a mis-tagged clip. Outputs images, frame count, fps. |
-| **Load Videos** | Gather many clips from a folder as an Inspire `ITEM_LIST` of **lazy** native `VIDEO`s, to loop over one at a time. `directory` is relative to `input/` or an absolute path; `filenames` (one per line) picks an exact set. Outputs `item_list`, a per-clip `videos` list, and `count`. |
+| **Load Videos** | Gather many clips from a folder as an Inspire `ITEM_LIST` of **lazy** native `VIDEO`s, to loop over one at a time. `directory` is relative to `input/` or an absolute path; `pattern` filters by wildcard (`*.mp4`, `PROJECT_AMIR_*`); `filenames` (one per line, exact or wildcard) picks an exact set. Outputs `item_list`, a per-clip `videos` list, and `count`. |
 | **Save Video · Combine** | Encode an IMAGE batch to mp4 / webm / lossless PNG frames via ffmpeg, with the colour controls (`color_range`, `colorspace`, `pix_fmt`, `crf`) that keep a grade intact. Previews in the node. |
 
 #### Video Concatenate
@@ -225,8 +225,13 @@ frame), and the loop keeps that to one clip at a time.
 
 - `directory` — relative to `input/`, or an **absolute** path so you can point
   straight at a source folder elsewhere without copying gigabytes into `input/`.
+- `pattern` — optional **wildcard** filter over the folder: `*.mp4`,
+  `PROJECT_AMIR_*` (case-insensitive, videos only). Empty = every video.
 - `filenames` — optional, one per line, to load an exact set in an exact order.
-  Empty loads every video in the folder, sorted by name (`reverse` flips it).
+  Each line is an exact name (`clip` finds `clip.mp4`) **or** a wildcard
+  (`PROJECT_AMIR_*.mp4`); globs expand in folder order, exact names keep their
+  line order, duplicates are dropped. Takes precedence over `pattern`. Empty (and
+  no pattern) loads every video, sorted by name (`reverse` flips the result).
 - `videos` (a ComfyUI list) is the other idiom: wire it anywhere and every
   downstream node runs once per clip, no Foreach node needed.
 

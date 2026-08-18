@@ -15,9 +15,10 @@ of them in memory at once.
 
 Files come from `directory`: a path relative to ComfyUI's input/ folder, or an
 absolute path (so you can point straight at a source folder elsewhere without
-copying gigabytes into input/). With `filenames` empty every video file in the
-folder is taken, sorted by name; give it a newline-separated list to pick an
-exact set in an exact order.
+copying gigabytes into input/). Narrow what gets loaded three ways, in order of
+precedence: `filenames` (one per line — exact names or wildcards), else
+`pattern` (a single wildcard like `*.mp4` or `PROJECT_AMIR_*` over the folder),
+else every video file sorted by name.
 
 Outputs both loop idioms, like JSON To Item List:
   item_list — one ITEM_LIST value for ▶Foreach List (sequential, accumulates)
@@ -27,6 +28,7 @@ Outputs both loop idioms, like JSON To Item List:
 
 from __future__ import annotations
 
+import fnmatch
 import os
 
 from ...base import TiNode
@@ -93,32 +95,81 @@ def _match_name(root, name):
 	return None
 
 
-def resolve_video_files(directory, filenames="", reverse=False, base_dir=None):
+_GLOB_CHARS = set("*?[")
+
+
+def _is_glob(s):
+	return any(c in s for c in _GLOB_CHARS)
+
+
+def _match_glob(pattern, listing):
+	"""Video files matching a shell glob, case-insensitively, in listing order.
+
+	`listing` is already video-extension-filtered, so a bare stem like
+	`PROJECT_AMIR_*` still only ever selects videos (never a stray sidecar
+	`.txt`), while `*.mp4` narrows to that extension as you'd expect.
+	"""
+	pat = pattern.strip().lower()
+	return [f for f in listing if fnmatch.fnmatch(f.lower(), pat)]
+
+
+def resolve_video_files(directory, filenames="", pattern="", reverse=False, base_dir=None):
 	"""Ordered list of absolute video paths to load.
 
-	`filenames` (one per line) picks an exact set in that order; empty scans the
-	folder for every video-extension file, sorted by name. Pure and testable —
-	pass `base_dir` to avoid needing folder_paths.
+	Selection precedence:
+	  * `filenames` non-empty — one entry per line, each an exact name OR a glob
+	    (`PROJECT_AMIR_*.mp4`, `clip` → `clip.mp4`); globs expand in folder order,
+	    exact names keep their line order, all deduped. A line that matches
+	    nothing raises.
+	  * else `pattern` non-empty — a single glob over the folder (`*.mp4`,
+	    `PROJECT_AMIR_*`).
+	  * else — every video-extension file in the folder, sorted by name.
+
+	Pure and testable — pass `base_dir` to avoid needing folder_paths.
 	"""
 	root = resolve_dir(directory, base_dir)
 	if not os.path.isdir(root):
 		raise RuntimeError(f"Load Videos: folder not found: {root}")
 
+	def _folder_hint():
+		have = _list_videos(root)
+		if not have:
+			return " — the folder has no video files."
+		return (" — videos in the folder: " + ", ".join(have[:12])
+				+ (" …" if len(have) > 12 else ""))
+
 	names = [ln.strip() for ln in str(filenames or "").splitlines()]
 	names = [n for n in names if n]
+
 	if names:
+		listing = _list_videos(root)
 		paths, missing = [], []
 		for n in names:
-			hit = _match_name(root, n)
-			(paths if hit else missing).append(hit or n)
+			if _is_glob(n):
+				hits = _match_glob(n, listing)
+				if not hits:
+					missing.append(n)
+				for f in hits:
+					p = os.path.join(root, f)
+					if p not in paths:
+						paths.append(p)
+			else:
+				hit = _match_name(root, n)
+				if hit is None:
+					missing.append(n)
+				elif hit not in paths:
+					paths.append(hit)
 		if missing:
-			have = _list_videos(root)
-			hint = (" — videos in the folder: " + ", ".join(have[:12])
-					+ (" …" if len(have) > 12 else "")) if have else \
-				" — the folder has no video files."
 			raise RuntimeError(
-				f"Load Videos: not found in {root}: "
-				+ ", ".join(missing) + hint)
+				f"Load Videos: no match / not found in {root}: "
+				+ ", ".join(missing) + _folder_hint())
+	elif str(pattern or "").strip():
+		files = _match_glob(pattern, _list_videos(root))
+		if not files:
+			raise RuntimeError(
+				f"Load Videos: nothing matches {pattern.strip()!r} in {root}"
+				+ _folder_hint())
+		paths = [os.path.join(root, f) for f in files]
 	else:
 		paths = [os.path.join(root, f) for f in _list_videos(root)]
 		if not paths:
@@ -146,9 +197,15 @@ class LoadVideos(TiNode):
 					"into input/."}),
 			},
 			"optional": {
+				"pattern": ("STRING", {"default": "", "tooltip":
+					"Optional wildcard filter over the folder, e.g. *.mp4 or "
+					"PROJECT_AMIR_* (case-insensitive). Empty = every video. "
+					"Ignored when filenames is filled in."}),
 				"filenames": ("STRING", {"default": "", "multiline": True,
-					"tooltip": "Optional: exact files to load, one per line, in "
-					"order. Empty = every video in the folder, sorted by name."}),
+					"tooltip": "Optional: files to load, one per line, in order. "
+					"Each line is an exact name (\"clip\" finds \"clip.mp4\") or a "
+					"wildcard (PROJECT_AMIR_*.mp4). Empty = use pattern / whole "
+					"folder."}),
 				"reverse": ("BOOLEAN", {"default": False,
 					"tooltip": "Reverse the order the clips are loaded in."}),
 			},
@@ -180,16 +237,16 @@ class LoadVideos(TiNode):
 	FUNCTION = "execute"
 
 	@classmethod
-	def IS_CHANGED(cls, directory="", filenames="", reverse=False):
+	def IS_CHANGED(cls, directory="", pattern="", filenames="", reverse=False):
 		# Re-run when the set of files, their order, or their contents change.
 		try:
-			paths = resolve_video_files(directory, filenames, reverse)
+			paths = resolve_video_files(directory, filenames, pattern, reverse)
 		except Exception as exc:  # noqa: BLE001 — surface as a changed sig, node errors on run
 			return repr(exc)
 		return "|".join(f"{p}:{os.path.getmtime(p)}" for p in paths)
 
-	def execute(self, directory="", filenames="", reverse=False):
-		paths = resolve_video_files(directory, filenames, reverse)
+	def execute(self, directory="", pattern="", filenames="", reverse=False):
+		paths = resolve_video_files(directory, filenames, pattern, reverse)
 		if VideoFromFile is None:
 			raise RuntimeError(
 				"Load Videos: ComfyUI's native VIDEO API (comfy_api.latest) is "

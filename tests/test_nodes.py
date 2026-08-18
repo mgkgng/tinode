@@ -1015,6 +1015,40 @@ def test_load_videos_explicit_filenames_keep_order():
 		assert [os.path.basename(p) for p in paths] == ["c.mp4", "a.mp4"]
 
 
+def test_load_videos_pattern_filters_folder():
+	with tempfile.TemporaryDirectory() as d:
+		for name in ("PROJECT_AMIR_01.mp4", "PROJECT_AMIR_02.mov",
+					 "OTHER_03.mp4", "notes.txt"):
+			open(os.path.join(d, name), "w").close()
+		# extension glob
+		mp4 = resolve_video_files("", pattern="*.mp4", base_dir=d)
+		assert [os.path.basename(p) for p in mp4] == ["OTHER_03.mp4", "PROJECT_AMIR_01.mp4"]
+		# stem glob, case-insensitive, still videos-only (no notes.txt)
+		amir = resolve_video_files("", pattern="project_amir_*", base_dir=d)
+		assert [os.path.basename(p) for p in amir] == [
+			"PROJECT_AMIR_01.mp4", "PROJECT_AMIR_02.mov"]
+
+
+def test_load_videos_glob_in_filenames_and_dedup():
+	with tempfile.TemporaryDirectory() as d:
+		for name in ("a1.mp4", "a2.mp4", "b1.mp4"):
+			open(os.path.join(d, name), "w").close()
+		# a glob line plus an exact line; a1 appears in both but is not duplicated
+		paths = resolve_video_files("", filenames="a*.mp4\na1.mp4", base_dir=d)
+		assert [os.path.basename(p) for p in paths] == ["a1.mp4", "a2.mp4"]
+
+
+def test_load_videos_pattern_no_match_errors():
+	with tempfile.TemporaryDirectory() as d:
+		open(os.path.join(d, "a.mp4"), "w").close()
+		try:
+			resolve_video_files("", pattern="ZZZ_*", base_dir=d)
+		except RuntimeError as exc:
+			assert "ZZZ_" in str(exc)
+		else:
+			raise AssertionError("expected a RuntimeError for a pattern with no match")
+
+
 def test_load_videos_missing_named_file_errors():
 	with tempfile.TemporaryDirectory() as d:
 		open(os.path.join(d, "a.mp4"), "w").close()
