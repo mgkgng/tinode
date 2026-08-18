@@ -1021,9 +1021,26 @@ def test_load_videos_missing_named_file_errors():
 		try:
 			resolve_video_files("", "a.mp4\nghost.mp4", base_dir=d)
 		except RuntimeError as exc:
-			assert "ghost.mp4" in str(exc)
+			# names the missing file AND lists what is actually there
+			assert "ghost.mp4" in str(exc) and "a.mp4" in str(exc)
 		else:
 			raise AssertionError("expected a RuntimeError for the missing file")
+
+
+def test_load_videos_matches_name_without_extension():
+	with tempfile.TemporaryDirectory() as d:
+		open(os.path.join(d, "DICAIRE T 05 pour test IA.mp4"), "w").close()
+		paths = resolve_video_files("", "DICAIRE T 05 pour test IA", base_dir=d)
+		assert [os.path.basename(p) for p in paths] == ["DICAIRE T 05 pour test IA.mp4"]
+
+
+def test_load_videos_lone_slash_is_the_input_dir_not_root():
+	with tempfile.TemporaryDirectory() as d:
+		open(os.path.join(d, "a.mp4"), "w").close()
+		# "/" must resolve to base_dir (the input folder), never the FS root.
+		assert resolve_dir("/", base_dir=d) == d
+		paths = resolve_video_files("/", "", base_dir=d)
+		assert [os.path.basename(p) for p in paths] == ["a.mp4"]
 
 
 def test_load_videos_absolute_dir_is_used_as_is():

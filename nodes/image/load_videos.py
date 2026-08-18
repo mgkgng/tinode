@@ -53,13 +53,44 @@ def _input_dir():
 
 
 def resolve_dir(directory, base_dir=None):
-	"""Absolute folder to scan. Absolute `directory` is used as-is; a relative
-	one (or empty) is taken under ComfyUI's input/ directory."""
+	"""Absolute folder to scan. A real absolute `directory` (e.g. /home/me/clips)
+	is used as-is; a relative one, empty, or a lone "/" is the input/ directory.
+
+	A bare "/" is treated as the input root, not the filesystem root: nobody
+	loads videos from "/", and it is the natural thing to type for "the default
+	folder".
+	"""
 	directory = str(directory or "").strip()
-	if directory and os.path.isabs(directory):
-		return directory
 	base = base_dir if base_dir is not None else _input_dir()
-	return os.path.join(base, directory) if directory else base
+	if not directory or directory.strip("/\\") == "":
+		return base
+	if os.path.isabs(directory):
+		return directory
+	return os.path.join(base, directory)
+
+
+def _list_videos(root):
+	"""Every video-extension file directly in `root`, sorted by name."""
+	return sorted(f for f in os.listdir(root)
+				  if os.path.isfile(os.path.join(root, f))
+				  and f.lower().endswith(VIDEO_EXTS))
+
+
+def _match_name(root, name):
+	"""Resolve one requested filename to an existing path, or None.
+
+	Tries the name as given, then — if it carries no video extension — the name
+	with each known video extension, so "clip" finds "clip.mp4". This is what
+	lets you list bare names without remembering each container.
+	"""
+	p = name if os.path.isabs(name) else os.path.join(root, name)
+	if os.path.isfile(p):
+		return p
+	if not name.lower().endswith(VIDEO_EXTS):
+		for ext in VIDEO_EXTS:
+			if os.path.isfile(p + ext):
+				return p + ext
+	return None
 
 
 def resolve_video_files(directory, filenames="", reverse=False, base_dir=None):
@@ -78,20 +109,18 @@ def resolve_video_files(directory, filenames="", reverse=False, base_dir=None):
 	if names:
 		paths, missing = [], []
 		for n in names:
-			p = n if os.path.isabs(n) else os.path.join(root, n)
-			if os.path.isfile(p):
-				paths.append(p)
-			else:
-				missing.append(n)
+			hit = _match_name(root, n)
+			(paths if hit else missing).append(hit or n)
 		if missing:
+			have = _list_videos(root)
+			hint = (" — videos in the folder: " + ", ".join(have[:12])
+					+ (" …" if len(have) > 12 else "")) if have else \
+				" — the folder has no video files."
 			raise RuntimeError(
-				"Load Videos: these files were not found in "
-				f"{root}: " + ", ".join(missing))
+				f"Load Videos: not found in {root}: "
+				+ ", ".join(missing) + hint)
 	else:
-		paths = sorted(
-			os.path.join(root, f) for f in os.listdir(root)
-			if os.path.isfile(os.path.join(root, f))
-			and f.lower().endswith(VIDEO_EXTS))
+		paths = [os.path.join(root, f) for f in _list_videos(root)]
 		if not paths:
 			raise RuntimeError(f"Load Videos: no video files in {root}")
 
@@ -110,10 +139,11 @@ class LoadVideos(TiNode):
 		return {
 			"required": {
 				"directory": ("STRING", {"default": "", "tooltip":
-					"Folder to load from. Relative = under ComfyUI's input/ "
-					"folder; absolute = that exact path (point straight at a "
-					"source folder without copying it into input/). Empty = "
-					"input/ itself."}),
+					"Folder to load from. Empty (or just \"/\") = ComfyUI's "
+					"input/ folder. A relative path is under input/; a full "
+					"absolute path (e.g. /home/me/clips) is used as-is, so you "
+					"can point straight at a source folder without copying it "
+					"into input/."}),
 			},
 			"optional": {
 				"filenames": ("STRING", {"default": "", "multiline": True,
