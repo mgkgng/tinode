@@ -1015,6 +1015,16 @@ def test_load_videos_explicit_filenames_keep_order():
 		assert [os.path.basename(p) for p in paths] == ["c.mp4", "a.mp4"]
 
 
+def test_load_videos_forgives_redundant_input_prefix():
+	with tempfile.TemporaryDirectory() as base:
+		# `base` stands in for ComfyUI's input/ dir; the real folder is base/dicaire.
+		sub = os.path.join(base, "dicaire")
+		os.makedirs(sub)
+		# Every natural spelling the user might type must land on base/dicaire.
+		for spec in ("dicaire", "input/dicaire", "/input/dicaire", "/dicaire"):
+			assert resolve_dir(spec, base_dir=base) == sub, spec
+
+
 def test_load_videos_pattern_filters_folder():
 	with tempfile.TemporaryDirectory() as d:
 		for name in ("PROJECT_AMIR_01.mp4", "PROJECT_AMIR_02.mov",

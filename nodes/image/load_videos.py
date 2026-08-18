@@ -55,20 +55,48 @@ def _input_dir():
 
 
 def resolve_dir(directory, base_dir=None):
-	"""Absolute folder to scan. A real absolute `directory` (e.g. /home/me/clips)
-	is used as-is; a relative one, empty, or a lone "/" is the input/ directory.
+	"""Absolute folder to scan, resolved forgivingly.
 
-	A bare "/" is treated as the input root, not the filesystem root: nobody
-	loads videos from "/", and it is the natural thing to type for "the default
-	folder".
+	The base is ComfyUI's input/ directory. `directory` may be written any of the
+	natural ways and the first that actually exists wins:
+
+	  * empty, or a lone "/"                → input/ itself
+	  * a relative path (`dicaire`)         → under input/
+	  * a redundant `input/` or `/input/`   → the input/ is stripped (input/ is
+	    prefix (`/input/dicaire`)              already the base), so it still lands
+	                                           on input/dicaire
+	  * a path under the ComfyUI root       → tried relative to the root too
+	  * a real absolute path (`/home/me/…`) → used as-is
+
+	A bare "/" is the input root, not the filesystem root: nobody loads videos
+	from "/", and it is the natural thing to type for "the default folder". When
+	nothing exists, the input-relative reading is returned so the error names the
+	folder the user most likely meant.
 	"""
 	directory = str(directory or "").strip()
 	base = base_dir if base_dir is not None else _input_dir()
 	if not directory or directory.strip("/\\") == "":
 		return base
+
+	stripped = directory.replace("\\", "/").strip("/")     # no leading/trailing slash
+	root = os.path.dirname(base.rstrip("/\\"))              # ComfyUI root (parent of input/)
+
+	candidates = []
 	if os.path.isabs(directory):
-		return directory
-	return os.path.join(base, directory)
+		candidates.append(directory)                       # honour a real absolute path first
+	candidates.append(os.path.join(base, stripped))        # the documented case: under input/
+	if stripped.lower().startswith("input/"):              # redundant input/ prefix -> drop it
+		candidates.append(os.path.join(base, stripped[len("input/"):]))
+	if root:
+		candidates.append(os.path.join(root, stripped))    # e.g. literal "input/dicaire" from root
+
+	for c in candidates:
+		if os.path.isdir(c):
+			return c
+	# Nothing exists: prefer the input-relative reading in the error message,
+	# stripping a redundant input/ prefix so it names the folder they meant.
+	guess = stripped[len("input/"):] if stripped.lower().startswith("input/") else stripped
+	return os.path.join(base, guess)
 
 
 def _list_videos(root):
@@ -191,10 +219,11 @@ class LoadVideos(TiNode):
 			"required": {
 				"directory": ("STRING", {"default": "", "tooltip":
 					"Folder to load from. Empty (or just \"/\") = ComfyUI's "
-					"input/ folder. A relative path is under input/; a full "
-					"absolute path (e.g. /home/me/clips) is used as-is, so you "
-					"can point straight at a source folder without copying it "
-					"into input/."}),
+					"input/ folder. A relative path is under input/ (dicaire → "
+					"input/dicaire); a leading input/ is fine too (input/dicaire, "
+					"/input/dicaire both work). A full absolute path (e.g. "
+					"/home/me/clips) is used as-is, so you can point straight at a "
+					"source folder without copying it into input/."}),
 			},
 			"optional": {
 				"pattern": ("STRING", {"default": "", "tooltip":
