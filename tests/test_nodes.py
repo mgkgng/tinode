@@ -1196,6 +1196,24 @@ def test_mask_store_roundtrip(tmp_path=None):
 		assert m.max() == 1.0 and m.min() == 0.0     # exact 8-bit round trip
 
 
+def test_frame_pad_count_lands_on_4n_plus_1():
+	from tinode.nodes.image.frame_pad import frame_pad_count, FramePad, FrameUnpad
+	for L in range(1, 200):
+		p = frame_pad_count(L, 8, 4)
+		assert 8 <= p <= 11, (L, p)
+		assert (L + p - 1) % 4 == 0, (L, p)          # total is 4n+1
+	# node round trip: pad then unpad restores the exact clip
+	img = torch.rand(30, 8, 10, 3)
+	mask = torch.rand(30, 8, 10)
+	padded, pmask, pc, total = FramePad().execute(img, mask=mask)
+	assert total == 30 + pc and (total - 1) % 4 == 0
+	assert padded.shape[0] == total and pmask.shape[0] == total
+	# prepended frames are copies of frame 0
+	assert torch.equal(padded[0], img[0]) and torch.equal(padded[pc], img[0])
+	(back,) = FrameUnpad().execute(padded, pc)
+	assert torch.equal(back, img), "pad then unpad must restore the original clip"
+
+
 def test_crop_sequence_roundtrip_8bit_and_16bit():
 	# The lossless RGB export/import both directions, at each bit depth.
 	img = torch.rand(3, 12, 16, 3)

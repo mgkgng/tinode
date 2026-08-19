@@ -132,6 +132,8 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Load Masks** | Phase 2: scan the mask store → an Inspire `ITEM_LIST`, one item per clip. `source_dir` re-locates moved footage. |
 | **Load Mask** | Inside the phase-2 loop: one item → `video` (original, re-decoded) + `mask` (crop space) + `crop_info` + `stem`. |
 | **Load Cropped Frames** | Inside the phase-2 loop: one item → the lossless `crops` Save Crop & Mask exported (8- or 16-bit), for feeding removal without re-decoding. |
+| **Frame Pad** | Prepend duplicate head frames so the clip length is `4n+1` (a video-VAE constraint, e.g. Netflix VOID) while adding ≥`min_prepend` (8 reduces head error). Pads the mask in lockstep; outputs `pad_count`. |
+| **Frame Unpad** | Drop the `pad_count` head frames Frame Pad added, recovering the original-length result. |
 
 #### Video Concatenate
 

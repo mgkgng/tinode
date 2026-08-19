@@ -1,8 +1,8 @@
 {
   "id": "tinode-phase2-removal-template",
   "revision": 0,
-  "last_node_id": 9,
-  "last_link_id": 15,
+  "last_node_id": 11,
+  "last_link_id": 19,
   "nodes": [
     {
       "id": 1,
@@ -92,14 +92,14 @@
           "name": "flow_control",
           "type": "FOREACH_LIST_CONTROL",
           "links": [
-            14
+            18
           ]
         },
         {
           "name": "remained_list",
           "type": "ITEM_LIST",
           "links": [
-            15
+            19
           ]
         },
         {
@@ -153,21 +153,22 @@
           "name": "mask",
           "type": "MASK",
           "links": [
-            9
+            8,
+            13
           ]
         },
         {
           "name": "crop_info",
           "type": "TI_CROP_XFORM",
           "links": [
-            8
+            12
           ]
         },
         {
           "name": "stem",
           "type": "STRING",
           "links": [
-            12
+            16
           ]
         },
         {
@@ -259,7 +260,7 @@
           "name": "fps",
           "type": "FLOAT",
           "links": [
-            11
+            15
           ]
         },
         {
@@ -273,15 +274,101 @@
       }
     },
     {
+      "id": 10,
+      "type": "TI_FramePad",
+      "pos": [
+        900,
+        250
+      ],
+      "size": [
+        240,
+        150
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 7
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 8
+        },
+        {
+          "name": "min_prepend",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "min_prepend"
+          }
+        },
+        {
+          "name": "temporal_ratio",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "temporal_ratio"
+          }
+        },
+        {
+          "name": "max_frames",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "max_frames"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            9
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        },
+        {
+          "name": "pad_count",
+          "type": "INT",
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "total_frames",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_FramePad"
+      },
+      "widgets_values": [
+        8,
+        4,
+        197
+      ],
+      "title": "Frame Pad (ti)"
+    },
+    {
       "id": 6,
       "type": "Note",
       "pos": [
-        880,
-        240
+        1180,
+        330
       ],
       "size": [
-        360,
-        180
+        380,
+        190
       ],
       "flags": {},
       "order": 6,
@@ -292,9 +379,55 @@
         "Node name for S&R": "Note"
       },
       "widgets_values": [
-        "OBJECT REMOVAL GOES HERE\n\nInsert your model between:\n  Load Cropped Frames.crops  +  Load Mask.mask\n  -> filled crops -> Mask Crop Paste Back.crops\n\nRight now crops pass straight through (identity no-op),\nso the loop + lossless save already run end to end."
+        "VOID REMOVAL GOES HERE\n\nInsert Netflix VOID between:\n  Frame Pad.images (4n+1)  +  Frame Pad.mask\n  -> filled clip -> Frame Unpad.images\n\nRight now Frame Pad.images passes straight to Frame Unpad\n(identity), so the loop + lossless save already run end to end.\nFrame Pad.pad_count -> Frame Unpad.pad_count strips the head frames."
       ],
-      "title": "⟵ removal step"
+      "title": "⟵ VOID removal step"
+    },
+    {
+      "id": 11,
+      "type": "TI_FrameUnpad",
+      "pos": [
+        1200,
+        200
+      ],
+      "size": [
+        230,
+        90
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 9
+        },
+        {
+          "name": "pad_count",
+          "type": "INT",
+          "link": 10,
+          "widget": {
+            "name": "pad_count"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_FrameUnpad"
+      },
+      "widgets_values": [
+        0
+      ],
+      "title": "Frame Unpad (ti)"
     },
     {
       "id": 7,
@@ -319,17 +452,17 @@
         {
           "name": "crops",
           "type": "IMAGE",
-          "link": 7
+          "link": 11
         },
         {
           "name": "crop_info",
           "type": "TI_CROP_XFORM",
-          "link": 8
+          "link": 12
         },
         {
           "name": "masks",
           "type": "MASK",
-          "link": 9
+          "link": 13
         },
         {
           "name": "feather",
@@ -353,7 +486,7 @@
           "name": "image",
           "type": "IMAGE",
           "links": [
-            10
+            14
           ]
         }
       ],
@@ -384,12 +517,12 @@
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 10
+          "link": 14
         },
         {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 11,
+          "link": 15,
           "widget": {
             "name": "frame_rate"
           }
@@ -397,7 +530,7 @@
         {
           "name": "filename_prefix",
           "type": "STRING",
-          "link": 12,
+          "link": 16,
           "widget": {
             "name": "filename_prefix"
           }
@@ -456,7 +589,7 @@
           "name": "filepath",
           "type": "STRING",
           "links": [
-            13
+            17
           ]
         }
       ],
@@ -493,17 +626,17 @@
         {
           "name": "flow_control",
           "type": "FOREACH_LIST_CONTROL",
-          "link": 14
+          "link": 18
         },
         {
           "name": "remained_list",
           "type": "ITEM_LIST",
-          "link": 15
+          "link": 19
         },
         {
           "name": "intermediate_output",
           "type": "*",
-          "link": 13
+          "link": 17
         }
       ],
       "outputs": [
@@ -571,12 +704,44 @@
       7,
       4,
       0,
+      10,
+      0,
+      "IMAGE"
+    ],
+    [
+      8,
+      3,
+      1,
+      10,
+      1,
+      "MASK"
+    ],
+    [
+      9,
+      10,
+      0,
+      11,
+      0,
+      "IMAGE"
+    ],
+    [
+      10,
+      10,
+      2,
+      11,
+      1,
+      "INT"
+    ],
+    [
+      11,
+      11,
+      0,
       7,
       1,
       "IMAGE"
     ],
     [
-      8,
+      12,
       3,
       2,
       7,
@@ -584,7 +749,7 @@
       "TI_CROP_XFORM"
     ],
     [
-      9,
+      13,
       3,
       1,
       7,
@@ -592,7 +757,7 @@
       "MASK"
     ],
     [
-      10,
+      14,
       7,
       0,
       8,
@@ -600,7 +765,7 @@
       "IMAGE"
     ],
     [
-      11,
+      15,
       5,
       2,
       8,
@@ -608,7 +773,7 @@
       "FLOAT"
     ],
     [
-      12,
+      16,
       3,
       3,
       8,
@@ -616,7 +781,7 @@
       "STRING"
     ],
     [
-      13,
+      17,
       8,
       0,
       9,
@@ -624,7 +789,7 @@
       "STRING"
     ],
     [
-      14,
+      18,
       2,
       0,
       9,
@@ -632,7 +797,7 @@
       "FOREACH_LIST_CONTROL"
     ],
     [
-      15,
+      19,
       2,
       1,
       9,
