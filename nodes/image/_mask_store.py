@@ -1,6 +1,6 @@
 """Shared on-disk layout for the mask handoff between the two removal passes.
 
-Save Masks (phase 1) writes it, Load Masks (phase 2) reads it. Keeping the
+Save Crop & Mask (phase 1) writes it, Load Masks (phase 2) reads it. Keeping the
 layout in one place means the two nodes can never drift out of agreement.
 
     <output>/<subdir>/<stem>/
@@ -68,7 +68,7 @@ def save_rgb_sequence(imgs, out_dir, pattern, bit_depth):
 			import cv2  # noqa: PLC0415
 		except Exception as exc:  # noqa: BLE001
 			raise RuntimeError(
-				"Save Masks: 16-bit crop export needs OpenCV (cv2), which isn't "
+				"Save Crop & Mask: 16-bit crop export needs OpenCV (cv2), which isn't "
 				"available. Set crop_bit_depth to 8, or install opencv-python."
 			) from exc
 		arr = (x * 65535.0 + 0.5).astype(np.uint16)

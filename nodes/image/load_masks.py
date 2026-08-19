@@ -1,7 +1,7 @@
 """Load Masks — read back the phase-1 mask store for the removal pass.
 
 Phase 2 of the two-workflow object-removal pipeline. Load Masks scans the store
-Save Masks wrote and emits an Inspire ITEM_LIST — one item per clip — so a
+Save Crop & Mask wrote and emits an Inspire ITEM_LIST — one item per clip — so a
 Foreach loop processes them one at a time. Inside the loop, Load Mask turns the
 current item into the pieces the removal graph needs:
 
@@ -11,7 +11,7 @@ current item into the pieces the removal graph needs:
              Mask Crop Paste Back)
   stem       the clip's key, e.g. to name the saved output
 
-Source pairing: each item carries the source path Save Masks recorded. If that
+Source pairing: each item carries the source path Save Crop & Mask recorded. If that
 file has moved, `source_dir` is searched for `<stem>.<ext>` as a fallback, so a
 store stays usable after the footage is relocated.
 """
@@ -96,7 +96,7 @@ class LoadMasks(TiNode):
 		return {
 			"required": {
 				"subdir": ("STRING", {"default": store.DEFAULT_SUBDIR, "tooltip":
-					"Folder under ComfyUI's output/ that Save Masks wrote to."}),
+					"Folder under ComfyUI's output/ that Save Crop & Mask wrote to."}),
 			},
 			"optional": {
 				"source_dir": ("STRING", {"default": "", "tooltip":
@@ -196,8 +196,8 @@ class LoadCroppedFrames(TiNode):
 	@classmethod
 	def INPUT_TYPES(cls):
 		return {"required": {"item": ("TI_MASK_ITEM", {"tooltip":
-			"An item from Load Masks. Reads the lossless crop/ sequence Save "
-			"Masks exported (crop_image must have been connected there)."})}}
+			"An item from Load Masks. Reads the lossless crop/ sequence Save Crop "
+			"& Mask exported (crop_image must have been connected there)."})}}
 
 	RETURN_TYPES = ("IMAGE", "INT")
 	RETURN_NAMES = ("crops", "frame_count")
@@ -215,7 +215,7 @@ class LoadCroppedFrames(TiNode):
 		if not item.get("has_crop"):
 			raise RuntimeError(
 				f"Load Cropped Frames: {item.get('stem','this clip')!r} has no "
-				"exported crops. Connect crop_image on Save Masks in phase 1, or "
+				"exported crops. Connect crop_image on Save Crop & Mask in phase 1, or "
 				"rebuild the crop with Crop By Info from the video + crop_info.")
 		cdir = os.path.join(item["clip_dir"], item.get("crop_subfolder", store.CROP_SUBFOLDER))
 		n = int(item.get("frame_count", 0))

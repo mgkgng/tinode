@@ -1,9 +1,13 @@
-"""Save Masks — persist a clip's mask + crop transform for a later removal pass.
+"""Save Crop & Mask — persist a clip's crop + mask + transform for a later pass.
 
 Phase 1 of the two-workflow object-removal pipeline. After you've cropped a
 video and masked the thing to remove, this writes, keyed by the source clip's
-stem: the mask (lossless) and the crop_info that maps the crop back to the
-original frame. Phase 2 (Load Masks) reads them to run removal and paste it in.
+stem: the mask (lossless), optionally the cropped RGB frames (lossless), and the
+crop_info that maps the crop back to the original frame. Phase 2 (Load Masks)
+reads them to run removal and paste it in.
+
+(The node id stays TI_SaveMasks for backward compatibility; the display name is
+Save Crop & Mask.)
 
 Nothing here is lossy:
   * the mask is saved as a lossless PNG sequence in CROP space — 8-bit is exact
@@ -32,7 +36,10 @@ from . import _mask_store as store
 
 @register
 class SaveMasks(TiNode):
-	DISPLAY_NAME = "Save Masks (ti)"
+	# Display name is "Save Crop & Mask"; the id stays TI_SaveMasks so existing
+	# workflows keep loading.
+	NODE_ID = "SaveMasks"
+	DISPLAY_NAME = "Save Crop & Mask (ti)"
 	CATEGORY = "tinode/video"
 	OUTPUT_NODE = True
 
@@ -86,17 +93,17 @@ class SaveMasks(TiNode):
 		stem = os.path.basename(str(first(stem, "")).strip())
 		if not stem:
 			raise RuntimeError(
-				"Save Masks: empty stem. Wire Video Source Path's `stem` output "
+				"Save Crop & Mask: empty stem. Wire Video Source Path's `stem` output "
 				"here so each clip's mask gets its own folder.")
 
 		m = first(mask)
 		if not isinstance(m, torch.Tensor):
-			raise RuntimeError("Save Masks: `mask` must be a MASK tensor.")
+			raise RuntimeError("Save Crop & Mask: `mask` must be a MASK tensor.")
 		if m.dim() == 2:
 			m = m.unsqueeze(0)                          # [ch,cw] -> [1,ch,cw]
 		if m.dim() != 3:
 			raise RuntimeError(
-				f"Save Masks: expected a [frames,H,W] mask, got shape {tuple(m.shape)}.")
+				f"Save Crop & Mask: expected a [frames,H,W] mask, got shape {tuple(m.shape)}.")
 		N, ch, cw = m.shape
 
 		root = store.output_root(subdir)
@@ -128,7 +135,7 @@ class SaveMasks(TiNode):
 		if isinstance(crop, torch.Tensor):
 			c = crop if crop.dim() == 4 else crop.unsqueeze(0)
 			if c.shape[0] != N:
-				print(f"[tinode] Save Masks: crop_image has {c.shape[0]} frames but "
+				print(f"[tinode] Save Crop & Mask: crop_image has {c.shape[0]} frames but "
 					  f"mask has {N} — saving all crop frames anyway.")
 			cframes_dir = store.crop_dir(cdir)
 			store.save_rgb_sequence(c, cframes_dir, store.CROP_PATTERN, crop_bits)
@@ -153,7 +160,7 @@ class SaveMasks(TiNode):
 		}
 		store.write_manifest(cdir, manifest)
 		extra = f" + {crop_bits}-bit crops" if crop_saved else ""
-		print(f"[tinode] Save Masks: wrote {N} mask frame(s){extra} for {stem!r} -> {cdir}")
+		print(f"[tinode] Save Crop & Mask: wrote {N} mask frame(s){extra} for {stem!r} -> {cdir}")
 		return {"ui": {"ti_saved_mask": [{"stem": stem, "frames": N, "crop": crop_saved}]},
 				"result": (store.manifest_path(cdir),)}
 
