@@ -1,0 +1,668 @@
+{
+  "id": "tinode-phase2-removal-template",
+  "revision": 0,
+  "last_node_id": 9,
+  "last_link_id": 15,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "TI_LoadMasks",
+      "pos": [
+        -40,
+        60
+      ],
+      "size": [
+        300,
+        100
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "subdir",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "subdir"
+          }
+        },
+        {
+          "name": "source_dir",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "source_dir"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_LoadMasks"
+      },
+      "widgets_values": [
+        "ti_masks",
+        ""
+      ],
+      "title": "Load Masks (ti)"
+    },
+    {
+      "id": 2,
+      "type": "ForeachListBegin //Inspire",
+      "pos": [
+        320,
+        60
+      ],
+      "size": [
+        230,
+        100
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "link": 1
+        },
+        {
+          "name": "initial_input",
+          "type": "*",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "flow_control",
+          "type": "FOREACH_LIST_CONTROL",
+          "links": [
+            14
+          ]
+        },
+        {
+          "name": "remained_list",
+          "type": "ITEM_LIST",
+          "links": [
+            15
+          ]
+        },
+        {
+          "name": "item",
+          "type": "*",
+          "links": [
+            3,
+            4
+          ]
+        },
+        {
+          "name": "intermediate_output",
+          "type": "*",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ForeachListBegin //Inspire"
+      }
+    },
+    {
+      "id": 3,
+      "type": "TI_LoadMask",
+      "pos": [
+        600,
+        -60
+      ],
+      "size": [
+        230,
+        140
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item",
+          "type": "TI_MASK_ITEM",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": [
+            5
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": [
+            9
+          ]
+        },
+        {
+          "name": "crop_info",
+          "type": "TI_CROP_XFORM",
+          "links": [
+            8
+          ]
+        },
+        {
+          "name": "stem",
+          "type": "STRING",
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_LoadMask"
+      },
+      "title": "Load Mask (ti)"
+    },
+    {
+      "id": 4,
+      "type": "TI_LoadCroppedFrames",
+      "pos": [
+        600,
+        230
+      ],
+      "size": [
+        230,
+        90
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item",
+          "type": "TI_MASK_ITEM",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "crops",
+          "type": "IMAGE",
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_LoadCroppedFrames"
+      },
+      "title": "Load Cropped Frames (ti)"
+    },
+    {
+      "id": 5,
+      "type": "GetVideoComponents",
+      "pos": [
+        900,
+        -60
+      ],
+      "size": [
+        210,
+        100
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": []
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "links": [
+            11
+          ]
+        },
+        {
+          "name": "bit_depth",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GetVideoComponents"
+      }
+    },
+    {
+      "id": 6,
+      "type": "Note",
+      "pos": [
+        880,
+        240
+      ],
+      "size": [
+        360,
+        180
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "Note"
+      },
+      "widgets_values": [
+        "OBJECT REMOVAL GOES HERE\n\nInsert your model between:\n  Load Cropped Frames.crops  +  Load Mask.mask\n  -> filled crops -> Mask Crop Paste Back.crops\n\nRight now crops pass straight through (identity no-op),\nso the loop + lossless save already run end to end."
+      ],
+      "title": "⟵ removal step"
+    },
+    {
+      "id": 7,
+      "type": "TI_MaskCropPasteBack",
+      "pos": [
+        1200,
+        20
+      ],
+      "size": [
+        260,
+        150
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 6
+        },
+        {
+          "name": "crops",
+          "type": "IMAGE",
+          "link": 7
+        },
+        {
+          "name": "crop_info",
+          "type": "TI_CROP_XFORM",
+          "link": 8
+        },
+        {
+          "name": "masks",
+          "type": "MASK",
+          "link": 9
+        },
+        {
+          "name": "feather",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "feather"
+          }
+        },
+        {
+          "name": "feather_mode",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "feather_mode"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_MaskCropPasteBack"
+      },
+      "widgets_values": [
+        3,
+        "gaussian"
+      ],
+      "title": "Mask Crop Paste Back (ti)"
+    },
+    {
+      "id": 8,
+      "type": "TI_SaveVideo",
+      "pos": [
+        1520,
+        20
+      ],
+      "size": [
+        280,
+        220
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 10
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "link": 11,
+          "widget": {
+            "name": "frame_rate"
+          }
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "link": 12,
+          "widget": {
+            "name": "filename_prefix"
+          }
+        },
+        {
+          "name": "format",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "format"
+          }
+        },
+        {
+          "name": "crf",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "crf"
+          }
+        },
+        {
+          "name": "pix_fmt",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "pix_fmt"
+          }
+        },
+        {
+          "name": "color_range",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "color_range"
+          }
+        },
+        {
+          "name": "colorspace",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "colorspace"
+          }
+        },
+        {
+          "name": "save_output",
+          "type": "BOOLEAN",
+          "link": null,
+          "widget": {
+            "name": "save_output"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "filepath",
+          "type": "STRING",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_SaveVideo"
+      },
+      "widgets_values": [
+        24.0,
+        "tinode/removed",
+        "png (lossless frames)",
+        17,
+        "yuv444p",
+        "tv",
+        "bt709",
+        true
+      ],
+      "title": "Save Video · Combine (ti)"
+    },
+    {
+      "id": 9,
+      "type": "ForeachListEnd //Inspire",
+      "pos": [
+        1840,
+        20
+      ],
+      "size": [
+        230,
+        90
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "flow_control",
+          "type": "FOREACH_LIST_CONTROL",
+          "link": 14
+        },
+        {
+          "name": "remained_list",
+          "type": "ITEM_LIST",
+          "link": 15
+        },
+        {
+          "name": "intermediate_output",
+          "type": "*",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "result",
+          "type": "*",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ForeachListEnd //Inspire"
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "ITEM_LIST"
+    ],
+    [
+      2,
+      1,
+      1,
+      2,
+      1,
+      "INT"
+    ],
+    [
+      3,
+      2,
+      2,
+      3,
+      0,
+      "TI_MASK_ITEM"
+    ],
+    [
+      4,
+      2,
+      2,
+      4,
+      0,
+      "TI_MASK_ITEM"
+    ],
+    [
+      5,
+      3,
+      0,
+      5,
+      0,
+      "VIDEO"
+    ],
+    [
+      6,
+      5,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      4,
+      0,
+      7,
+      1,
+      "IMAGE"
+    ],
+    [
+      8,
+      3,
+      2,
+      7,
+      2,
+      "TI_CROP_XFORM"
+    ],
+    [
+      9,
+      3,
+      1,
+      7,
+      3,
+      "MASK"
+    ],
+    [
+      10,
+      7,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      11,
+      5,
+      2,
+      8,
+      1,
+      "FLOAT"
+    ],
+    [
+      12,
+      3,
+      3,
+      8,
+      2,
+      "STRING"
+    ],
+    [
+      13,
+      8,
+      0,
+      9,
+      2,
+      "STRING"
+    ],
+    [
+      14,
+      2,
+      0,
+      9,
+      0,
+      "FOREACH_LIST_CONTROL"
+    ],
+    [
+      15,
+      2,
+      1,
+      9,
+      1,
+      "ITEM_LIST"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "PHASE 2 · object removal + paste back",
+      "bounding": [
+        -80,
+        -140,
+        2180,
+        520
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6,
+      "offset": [
+        200,
+        300
+      ]
+    }
+  },
+  "version": 0.4
+}

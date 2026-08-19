@@ -271,6 +271,12 @@ item ─► Load Mask ─┬─ video ─► Get Video Components ─► frames 
 Back` composites the filled crop back through the mask — everything outside the
 mask stays the untouched original, so there is no crop-rectangle seam.
 
+A ready-to-run **phase-2 template** ships at
+[`workflows/phase2_object_removal.json`](workflows/phase2_object_removal.json):
+it loads the store, loops, and pastes back to a lossless master, wired as an
+identity no-op today — drop your removal model into the marked gap (crops + mask
+→ filled crops).
+
 **No quality loss anywhere in the chain:** masks are lossless PNG, crops and
 paste-back are native-scale tensor ops (no resample unless you rescale), and the
 source is only ever decoded, never re-encoded. The single lossy step in the
