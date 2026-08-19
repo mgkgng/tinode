@@ -1,15 +1,15 @@
 {
-  "id": "tinode-phase2-removal-template",
+  "id": "phase2b_composite.json",
   "revision": 0,
-  "last_node_id": 11,
+  "last_node_id": 8,
   "last_link_id": 19,
   "nodes": [
     {
       "id": 1,
-      "type": "TI_LoadMasks",
+      "type": "TI_LoadClips",
       "pos": [
         -40,
-        60
+        40
       ],
       "size": [
         300,
@@ -22,18 +22,18 @@
         {
           "name": "subdir",
           "type": "STRING",
-          "link": null,
           "widget": {
             "name": "subdir"
-          }
+          },
+          "link": null
         },
         {
           "name": "source_dir",
           "type": "STRING",
-          "link": null,
           "widget": {
             "name": "source_dir"
-          }
+          },
+          "link": null
         }
       ],
       "outputs": [
@@ -53,28 +53,16 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "TI_LoadMasks"
+        "Node name for S&R": "TI_LoadClips"
       },
       "widgets_values": [
         "ti_masks",
         ""
       ],
-      "title": "Load Masks (ti)"
+      "title": "Load Clips (ti)"
     },
     {
-      "id": 2,
       "type": "ForeachListBegin //Inspire",
-      "pos": [
-        320,
-        60
-      ],
-      "size": [
-        230,
-        100
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
       "inputs": [
         {
           "name": "item_list",
@@ -84,6 +72,7 @@
         {
           "name": "initial_input",
           "type": "*",
+          "shape": 7,
           "link": 2
         }
       ],
@@ -106,8 +95,7 @@
           "name": "item",
           "type": "*",
           "links": [
-            3,
-            4
+            3
           ]
         },
         {
@@ -118,18 +106,29 @@
       ],
       "properties": {
         "Node name for S&R": "ForeachListBegin //Inspire"
-      }
+      },
+      "size": [
+        230,
+        100
+      ],
+      "id": 2,
+      "pos": [
+        320,
+        40
+      ],
+      "order": 2,
+      "mode": 0
     },
     {
       "id": 3,
-      "type": "TI_LoadMask",
+      "type": "TI_LoadClipFills",
       "pos": [
         600,
-        -60
+        -40
       ],
       "size": [
-        230,
-        140
+        240,
+        160
       ],
       "flags": {},
       "order": 3,
@@ -137,7 +136,7 @@
       "inputs": [
         {
           "name": "item",
-          "type": "TI_MASK_ITEM",
+          "type": "TI_CLIP_ITEM",
           "link": 3
         }
       ],
@@ -146,101 +145,68 @@
           "name": "video",
           "type": "VIDEO",
           "links": [
-            5
+            4
           ]
         },
         {
-          "name": "mask",
-          "type": "MASK",
+          "name": "filled_crops",
+          "type": "IMAGE",
           "links": [
-            8,
-            13
+            6
           ]
         },
         {
-          "name": "crop_info",
+          "name": "crop_infos",
           "type": "TI_CROP_XFORM",
           "links": [
-            12
+            7
+          ]
+        },
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": [
+            8
           ]
         },
         {
           "name": "stem",
           "type": "STRING",
           "links": [
-            16
+            11
           ]
         },
         {
-          "name": "frame_count",
+          "name": "crop_count",
           "type": "INT",
           "links": []
         }
       ],
       "properties": {
-        "Node name for S&R": "TI_LoadMask"
+        "Node name for S&R": "TI_LoadClipFills"
       },
-      "title": "Load Mask (ti)"
+      "widgets_values": [],
+      "title": "Load Clip Fills (ti)"
     },
     {
       "id": 4,
-      "type": "TI_LoadCroppedFrames",
-      "pos": [
-        600,
-        230
-      ],
-      "size": [
-        230,
-        90
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "item",
-          "type": "TI_MASK_ITEM",
-          "link": 4
-        }
-      ],
-      "outputs": [
-        {
-          "name": "crops",
-          "type": "IMAGE",
-          "links": [
-            7
-          ]
-        },
-        {
-          "name": "frame_count",
-          "type": "INT",
-          "links": []
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "TI_LoadCroppedFrames"
-      },
-      "title": "Load Cropped Frames (ti)"
-    },
-    {
-      "id": 5,
       "type": "GetVideoComponents",
       "pos": [
         900,
-        -60
+        -120
       ],
       "size": [
         210,
         100
       ],
       "flags": {},
-      "order": 5,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
           "name": "video",
           "type": "VIDEO",
-          "link": 5
+          "link": 4
         }
       ],
       "outputs": [
@@ -248,7 +214,7 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            6
+            5
           ]
         },
         {
@@ -260,7 +226,7 @@
           "name": "fps",
           "type": "FLOAT",
           "links": [
-            15
+            10
           ]
         },
         {
@@ -271,131 +237,161 @@
       ],
       "properties": {
         "Node name for S&R": "GetVideoComponents"
-      }
+      },
+      "widgets_values": []
     },
     {
-      "id": 10,
-      "type": "TI_FramePad",
+      "id": 5,
+      "type": "TI_CompositeCrops",
       "pos": [
-        900,
-        250
+        1200,
+        -40
       ],
       "size": [
-        240,
+        260,
         150
       ],
       "flags": {},
-      "order": 10,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
-          "name": "images",
+          "name": "image",
           "type": "IMAGE",
+          "link": 5
+        },
+        {
+          "name": "crops",
+          "type": "IMAGE",
+          "link": 6
+        },
+        {
+          "name": "crop_infos",
+          "type": "TI_CROP_XFORM",
           "link": 7
         },
         {
-          "name": "mask",
+          "name": "masks",
           "type": "MASK",
           "link": 8
         },
         {
-          "name": "min_prepend",
+          "name": "feather",
           "type": "INT",
-          "link": null,
           "widget": {
-            "name": "min_prepend"
-          }
+            "name": "feather"
+          },
+          "link": null
         },
         {
-          "name": "temporal_ratio",
-          "type": "INT",
-          "link": null,
+          "name": "feather_mode",
+          "type": "COMBO",
           "widget": {
-            "name": "temporal_ratio"
-          }
-        },
-        {
-          "name": "max_frames",
-          "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "max_frames"
-          }
+            "name": "feather_mode"
+          },
+          "link": null
         }
       ],
       "outputs": [
         {
-          "name": "images",
+          "name": "image",
           "type": "IMAGE",
           "links": [
             9
           ]
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "links": []
-        },
-        {
-          "name": "pad_count",
-          "type": "INT",
-          "links": [
-            10
-          ]
-        },
-        {
-          "name": "total_frames",
-          "type": "INT",
-          "links": []
         }
       ],
       "properties": {
-        "Node name for S&R": "TI_FramePad"
+        "Node name for S&R": "TI_CompositeCrops"
       },
       "widgets_values": [
-        8,
-        4,
-        197
+        3,
+        "gaussian"
       ],
-      "title": "Frame Pad (ti)"
+      "title": "Composite Crops (ti)"
     },
     {
       "id": 6,
-      "type": "Note",
+      "type": "TI_LoadVideoSettings",
       "pos": [
-        1180,
-        330
+        900,
+        220
       ],
       "size": [
-        380,
-        190
+        230,
+        130
       ],
       "flags": {},
       "order": 6,
       "mode": 0,
-      "inputs": [],
-      "outputs": [],
+      "inputs": [
+        {
+          "name": "name",
+          "type": "STRING",
+          "widget": {
+            "name": "name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "format",
+          "type": "STRING",
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "crf",
+          "type": "INT",
+          "links": [
+            13
+          ]
+        },
+        {
+          "name": "pix_fmt",
+          "type": "STRING",
+          "links": [
+            14
+          ]
+        },
+        {
+          "name": "color_range",
+          "type": "STRING",
+          "links": [
+            15
+          ]
+        },
+        {
+          "name": "colorspace",
+          "type": "STRING",
+          "links": [
+            16
+          ]
+        }
+      ],
       "properties": {
-        "Node name for S&R": "Note"
+        "Node name for S&R": "TI_LoadVideoSettings"
       },
       "widgets_values": [
-        "VOID REMOVAL GOES HERE\n\nInsert Netflix VOID between:\n  Frame Pad.images (4n+1)  +  Frame Pad.mask\n  -> filled clip -> Frame Unpad.images\n\nRight now Frame Pad.images passes straight to Frame Unpad\n(identity), so the loop + lossless save already run end to end.\nFrame Pad.pad_count -> Frame Unpad.pad_count strips the head frames."
+        "default"
       ],
-      "title": "⟵ VOID removal step"
+      "title": "Load Video Settings (ti)"
     },
     {
-      "id": 11,
-      "type": "TI_FrameUnpad",
+      "id": 7,
+      "type": "TI_SaveVideo",
       "pos": [
-        1200,
-        200
+        1520,
+        -40
       ],
       "size": [
-        230,
-        90
+        280,
+        240
       ],
       "flags": {},
-      "order": 11,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -404,184 +400,68 @@
           "link": 9
         },
         {
-          "name": "pad_count",
-          "type": "INT",
-          "link": 10,
-          "widget": {
-            "name": "pad_count"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            11
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "TI_FrameUnpad"
-      },
-      "widgets_values": [
-        0
-      ],
-      "title": "Frame Unpad (ti)"
-    },
-    {
-      "id": 7,
-      "type": "TI_MaskCropPasteBack",
-      "pos": [
-        1200,
-        20
-      ],
-      "size": [
-        260,
-        150
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 6
-        },
-        {
-          "name": "crops",
-          "type": "IMAGE",
-          "link": 11
-        },
-        {
-          "name": "crop_info",
-          "type": "TI_CROP_XFORM",
-          "link": 12
-        },
-        {
-          "name": "masks",
-          "type": "MASK",
-          "link": 13
-        },
-        {
-          "name": "feather",
-          "type": "INT",
-          "link": null,
-          "widget": {
-            "name": "feather"
-          }
-        },
-        {
-          "name": "feather_mode",
-          "type": "COMBO",
-          "link": null,
-          "widget": {
-            "name": "feather_mode"
-          }
-        }
-      ],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            14
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "TI_MaskCropPasteBack"
-      },
-      "widgets_values": [
-        3,
-        "gaussian"
-      ],
-      "title": "Mask Crop Paste Back (ti)"
-    },
-    {
-      "id": 8,
-      "type": "TI_SaveVideo",
-      "pos": [
-        1520,
-        20
-      ],
-      "size": [
-        280,
-        220
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 14
-        },
-        {
           "name": "frame_rate",
           "type": "FLOAT",
-          "link": 15,
           "widget": {
             "name": "frame_rate"
-          }
+          },
+          "link": 10
         },
         {
           "name": "filename_prefix",
           "type": "STRING",
-          "link": 16,
           "widget": {
             "name": "filename_prefix"
-          }
+          },
+          "link": 11
         },
         {
           "name": "format",
           "type": "COMBO",
-          "link": null,
           "widget": {
             "name": "format"
-          }
+          },
+          "link": 12
         },
         {
           "name": "crf",
           "type": "INT",
-          "link": null,
           "widget": {
             "name": "crf"
-          }
+          },
+          "link": 13
         },
         {
           "name": "pix_fmt",
           "type": "COMBO",
-          "link": null,
           "widget": {
             "name": "pix_fmt"
-          }
+          },
+          "link": 14
         },
         {
           "name": "color_range",
           "type": "COMBO",
-          "link": null,
           "widget": {
             "name": "color_range"
-          }
+          },
+          "link": 15
         },
         {
           "name": "colorspace",
           "type": "COMBO",
-          "link": null,
           "widget": {
             "name": "colorspace"
-          }
+          },
+          "link": 16
         },
         {
           "name": "save_output",
           "type": "BOOLEAN",
-          "link": null,
           "widget": {
             "name": "save_output"
-          }
+          },
+          "link": null
         }
       ],
       "outputs": [
@@ -598,10 +478,10 @@
       },
       "widgets_values": [
         24.0,
-        "tinode/removed",
-        "png (lossless frames)",
+        "removed",
+        "h264 (mp4)",
         17,
-        "yuv444p",
+        "yuv420p",
         "tv",
         "bt709",
         true
@@ -609,19 +489,7 @@
       "title": "Save Video · Combine (ti)"
     },
     {
-      "id": 9,
       "type": "ForeachListEnd //Inspire",
-      "pos": [
-        1840,
-        20
-      ],
-      "size": [
-        230,
-        90
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
       "inputs": [
         {
           "name": "flow_control",
@@ -648,7 +516,18 @@
       ],
       "properties": {
         "Node name for S&R": "ForeachListEnd //Inspire"
-      }
+      },
+      "size": [
+        230,
+        90
+      ],
+      "id": 8,
+      "pos": [
+        1860,
+        -40
+      ],
+      "order": 8,
+      "mode": 0
     }
   ],
   "links": [
@@ -674,117 +553,117 @@
       2,
       3,
       0,
-      "TI_MASK_ITEM"
+      "*"
     ],
     [
       4,
-      2,
-      2,
-      4,
-      0,
-      "TI_MASK_ITEM"
-    ],
-    [
-      5,
       3,
       0,
-      5,
+      4,
       0,
       "VIDEO"
     ],
     [
-      6,
       5,
-      0,
-      7,
-      0,
-      "IMAGE"
-    ],
-    [
-      7,
       4,
       0,
-      10,
+      5,
       0,
       "IMAGE"
     ],
     [
-      8,
+      6,
       3,
       1,
-      10,
+      5,
       1,
-      "MASK"
-    ],
-    [
-      9,
-      10,
-      0,
-      11,
-      0,
       "IMAGE"
     ],
     [
-      10,
-      10,
-      2,
-      11,
-      1,
-      "INT"
-    ],
-    [
-      11,
-      11,
-      0,
       7,
-      1,
-      "IMAGE"
-    ],
-    [
-      12,
       3,
       2,
-      7,
+      5,
       2,
       "TI_CROP_XFORM"
     ],
     [
-      13,
+      8,
       3,
-      1,
-      7,
+      3,
+      5,
       3,
       "MASK"
     ],
     [
-      14,
-      7,
+      9,
+      5,
       0,
-      8,
+      7,
       0,
       "IMAGE"
     ],
     [
-      15,
-      5,
+      10,
+      4,
       2,
-      8,
+      7,
       1,
       "FLOAT"
     ],
     [
-      16,
+      11,
       3,
-      3,
-      8,
+      4,
+      7,
       2,
       "STRING"
     ],
     [
-      17,
-      8,
+      12,
+      6,
       0,
-      9,
+      7,
+      3,
+      "STRING"
+    ],
+    [
+      13,
+      6,
+      1,
+      7,
+      4,
+      "INT"
+    ],
+    [
+      14,
+      6,
+      2,
+      7,
+      5,
+      "STRING"
+    ],
+    [
+      15,
+      6,
+      3,
+      7,
+      6,
+      "STRING"
+    ],
+    [
+      16,
+      6,
+      4,
+      7,
+      7,
+      "STRING"
+    ],
+    [
+      17,
+      7,
+      0,
+      8,
       2,
       "STRING"
     ],
@@ -792,7 +671,7 @@
       18,
       2,
       0,
-      9,
+      8,
       0,
       "FOREACH_LIST_CONTROL"
     ],
@@ -800,32 +679,19 @@
       19,
       2,
       1,
-      9,
+      8,
       1,
       "ITEM_LIST"
     ]
   ],
-  "groups": [
-    {
-      "title": "PHASE 2 · object removal + paste back",
-      "bounding": [
-        -80,
-        -140,
-        2180,
-        520
-      ],
-      "color": "#3f789e",
-      "font_size": 24,
-      "flags": {}
-    }
-  ],
+  "groups": [],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6,
+      "scale": 0.5,
       "offset": [
-        200,
-        300
+        400,
+        200
       ]
     }
   },
