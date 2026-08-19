@@ -30,6 +30,7 @@ folder_paths — you just don't get the visual editor there.
 
 from __future__ import annotations
 
+import json
 import os
 import random
 
@@ -166,3 +167,95 @@ class BboxCropManual(TiNode):
 		# built-in preview widget on top of our editor and blow up the node height.
 		# onExecuted still fires for any ui dict, so the editor gets ti_preview.
 		return {"ui": {"ti_preview": [info], "src_dims": [src_w, src_h]}, "result": result}
+
+
+def resolve_box(box, W, H, divisible_by):
+	"""One {x,y,w,h} dict -> a clamped, divisible-rounded (x0,y0,x1,y1) in the frame.
+
+	Same rules as the single Bbox Crop: origin clamped to the last pixel, w/h of 0
+	means "to the far edge", the size is rounded DOWN to a multiple of
+	divisible_by, and at least a 1px box is guaranteed.
+	"""
+	x = int(box.get("x", 0)); y = int(box.get("y", 0))
+	w = int(box.get("w", 0)); h = int(box.get("h", 0))
+	x0 = max(0, min(x, max(0, W - 1)))
+	y0 = max(0, min(y, max(0, H - 1)))
+	x1 = W if w <= 0 else x0 + w
+	y1 = H if h <= 0 else y0 + h
+	x1 = max(x0 + 1, min(x1, W))
+	y1 = max(y0 + 1, min(y1, H))
+	cw = _round_down(x1 - x0, int(divisible_by))
+	ch = _round_down(y1 - y0, int(divisible_by))
+	return x0, y0, x0 + cw, y0 + ch
+
+
+def parse_boxes(raw):
+	"""Decode the editor's serialized box list; [] on anything malformed."""
+	try:
+		data = json.loads(raw) if raw else []
+	except (ValueError, TypeError):
+		return []
+	if not isinstance(data, list):
+		return []
+	out = []
+	for b in data:
+		if isinstance(b, dict) and all(k in b for k in ("x", "y", "w", "h")):
+			out.append(b)
+	return out
+
+
+@register
+class BboxCropMulti(TiNode):
+	DISPLAY_NAME = "Bbox Crop · Multi (ti)"
+	CATEGORY = "tinode/image"
+	OUTPUT_NODE = True
+
+	@classmethod
+	def INPUT_TYPES(cls):
+		return {
+			"required": {
+				"image": ("IMAGE",),
+			},
+			"optional": {
+				# JSON list of {x,y,w,h}, driven by the multi-box editor and saved
+				# with the workflow. Empty = one crop of the whole frame.
+				"boxes": ("STRING", {"default": "[]", "multiline": False}),
+				"divisible_by": ("INT", {"default": 1, "min": 0, "max": 256, "step": 1,
+					"tooltip": "Round each crop size down to a multiple (8 for most "
+							   "latent models). 0 or 1 = off."}),
+			},
+		}
+
+	# Each output is a LIST — one entry per box — so SAM3, masking and Save Crop
+	# & Mask downstream run once per crop automatically (ComfyUI list expansion),
+	# and crop_index keys each crop's saved artifact.
+	RETURN_TYPES = ("IMAGE", "TI_CROP_XFORM", "INT")
+	RETURN_NAMES = ("crops", "crop_info", "crop_index")
+	OUTPUT_IS_LIST = (True, True, True)
+	FUNCTION = "execute"
+
+	def execute(self, image, boxes="[]", divisible_by=1):
+		imgs = image if image.dim() == 4 else image.unsqueeze(0)
+		N, H, W, C = imgs.shape
+
+		box_list = parse_boxes(boxes)
+		if not box_list:
+			box_list = [{"x": 0, "y": 0, "w": 0, "h": 0}]   # whole frame = one crop
+
+		crops, infos, indices = [], [], []
+		for i, b in enumerate(box_list):
+			x0, y0, x1, y1 = resolve_box(b, W, H, divisible_by)
+			crop = imgs[:, y0:y1, x0:x1, :].contiguous()      # [N,ch,cw,C]
+			item = {"y0": y0, "x0": x0, "h": y1 - y0, "w": x1 - x0,
+					"oy": 0, "ox": 0, "nh": y1 - y0, "nw": x1 - x0}
+			crops.append(crop)
+			infos.append({"H": H, "W": W, "C": C, "items": [item] * N})
+			indices.append(i)
+
+		result = (crops, infos, indices)
+		preview = _save_preview(imgs[0])
+		if preview is None:
+			return result
+		info, src_w, src_h = preview
+		return {"ui": {"ti_preview": [info], "src_dims": [src_w, src_h],
+					   "box_count": [len(crops)]}, "result": result}

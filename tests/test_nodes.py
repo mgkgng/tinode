@@ -1107,6 +1107,31 @@ def test_load_videos_empty_folder_errors():
 			raise AssertionError("expected a RuntimeError for an empty folder")
 
 
+def test_bbox_multi_emits_one_crop_per_box():
+	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti, parse_boxes, resolve_box
+	img = torch.rand(4, 100, 120, 3)
+	boxes = json.dumps([{"x": 10, "y": 20, "w": 40, "h": 30},
+						{"x": 60, "y": 5, "w": 32, "h": 48}])
+	crops, infos, idx = BboxCropMulti().execute(img, boxes=boxes)
+	assert idx == [0, 1]
+	assert len(crops) == 2 and len(infos) == 2
+	assert tuple(crops[0].shape) == (4, 30, 40, 3)
+	assert tuple(crops[1].shape) == (4, 48, 32, 3)
+	# each crop is bit-exact the source region, and its crop_info round-trips
+	x0, y0, x1, y1 = resolve_box({"x": 10, "y": 20, "w": 40, "h": 30}, 120, 100, 1)
+	assert torch.equal(crops[0], img[:, y0:y1, x0:x1, :])
+	(back,) = CropByInfo().execute(img, infos[1])
+	assert torch.equal(back, crops[1])
+
+
+def test_bbox_multi_empty_is_whole_frame():
+	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti
+	img = torch.rand(2, 40, 50, 3)
+	crops, infos, idx = BboxCropMulti().execute(img, boxes="[]")
+	assert len(crops) == 1 and idx == [0]
+	assert torch.equal(crops[0], img)                # whole frame
+
+
 def test_crop_by_info_reproduces_the_manual_crop():
 	img = torch.rand(4, 120, 160, 3)
 	crop, info = BboxCropManual().execute(img, x=20, y=10, width=64, height=48)
