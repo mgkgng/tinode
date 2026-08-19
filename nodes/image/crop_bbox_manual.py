@@ -36,7 +36,7 @@ import random
 
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, first as _first
 from ...registry import register
 
 # Longest side of the preview handed to the browser. The editor maps handles
@@ -226,12 +226,29 @@ class BboxCropMulti(TiNode):
 			},
 		}
 
-	# Each output is a LIST — one entry per box — so SAM3, masking and Save Crop
-	# & Mask downstream run once per crop automatically (ComfyUI list expansion),
-	# and crop_index keys each crop's saved artifact.
-	RETURN_TYPES = ("IMAGE", "TI_CROP_XFORM", "INT")
-	RETURN_NAMES = ("crops", "crop_info", "crop_index")
-	OUTPUT_IS_LIST = (True, True, True)
+	# Two ways out; pick one per graph.
+	#
+	# crops / crop_info / crop_index are a ComfyUI LIST — one entry per box — so
+	# whatever is wired to them runs once per crop automatically (list
+	# expansion). No loop node needed, but there is no iteration to hook into:
+	# nothing accumulates across crops and a loop's controls don't apply.
+	#
+	# item_list is a single Inspire ITEM_LIST value — one item per box — for
+	# ▶Foreach List. That gives a real sequential loop over the crops, nestable
+	# inside the outer per-clip Foreach, with an intermediate_output to
+	# accumulate through and a Validation Gate that stops on each crop in turn.
+	# Unpack the loop's `item` with Bbox Crop Item.
+	RETURN_TYPES = ("IMAGE", "TI_CROP_XFORM", "INT", "ITEM_LIST", "INT")
+	RETURN_NAMES = ("crops", "crop_info", "crop_index", "item_list", "count")
+	# Only the first three expand; item_list and count are plain single values.
+	OUTPUT_IS_LIST = (True, True, True, False, False)
+	OUTPUT_TOOLTIPS = (
+		"One IMAGE per box (ComfyUI list — downstream runs once per crop).",
+		"One crop_info per box, index-aligned with `crops`.",
+		"0-based index of each crop, for keying its saved artifacts.",
+		"One item per box for ▶Foreach List — unpack it with Bbox Crop Item.",
+		"How many boxes were drawn.",
+	)
 	FUNCTION = "execute"
 
 	def execute(self, image, boxes="[]", divisible_by=1):
@@ -242,20 +259,68 @@ class BboxCropMulti(TiNode):
 		if not box_list:
 			box_list = [{"x": 0, "y": 0, "w": 0, "h": 0}]   # whole frame = one crop
 
-		crops, infos, indices = [], [], []
+		crops, infos, indices, items = [], [], [], []
 		for i, b in enumerate(box_list):
 			x0, y0, x1, y1 = resolve_box(b, W, H, divisible_by)
 			crop = imgs[:, y0:y1, x0:x1, :].contiguous()      # [N,ch,cw,C]
 			item = {"y0": y0, "x0": x0, "h": y1 - y0, "w": x1 - x0,
 					"oy": 0, "ox": 0, "nh": y1 - y0, "nw": x1 - x0}
+			info = {"H": H, "W": W, "C": C, "items": [item] * N}
 			crops.append(crop)
-			infos.append({"H": H, "W": W, "C": C, "items": [item] * N})
+			infos.append(info)
 			indices.append(i)
+			# The same three values, packed one-per-box for the Foreach path. The
+			# crop tensor is the SAME object as in `crops` — carrying it costs
+			# nothing beyond the list that was built anyway.
+			items.append({"crop_index": i, "crop_count": len(box_list),
+						  "image": crop, "crop_info": info,
+						  "box": {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}})
 
-		result = (crops, infos, indices)
+		# A distinct list object: ForeachListBegin slices its ITEM_LIST down as it
+		# iterates, so it must not be an alias of a list we also return elsewhere.
+		result = (crops, infos, indices, list(items), len(items))
 		preview = _save_preview(imgs[0])
 		if preview is None:
 			return result
 		info, src_w, src_h = preview
 		return {"ui": {"ti_preview": [info], "src_dims": [src_w, src_h],
 					   "box_count": [len(crops)]}, "result": result}
+
+
+@register
+class BboxCropItem(TiNode):
+	"""Unpack one ▶Foreach List `item` from Bbox Crop · Multi's item_list.
+
+	The loop hands back whatever was in the list; this turns that opaque item
+	into the same three values the list-expansion path gives you — the crop
+	pixels, its crop_info, and its index — so the per-crop graph inside the loop
+	is wired exactly like the one outside it.
+	"""
+
+	DISPLAY_NAME = "Bbox Crop Item (ti)"
+	CATEGORY = "tinode/image"
+
+	@classmethod
+	def INPUT_TYPES(cls):
+		return {"required": {"item": ("TI_BBOX_ITEM", {"tooltip":
+			"One crop from Bbox Crop · Multi's item_list, via ForeachListBegin's "
+			"`item` output."})}}
+
+	RETURN_TYPES = ("IMAGE", "TI_CROP_XFORM", "INT", "INT")
+	RETURN_NAMES = ("crop", "crop_info", "crop_index", "crop_count")
+	OUTPUT_TOOLTIPS = (
+		"This crop's frames, bit-exact from the source.",
+		"Maps this crop back to the full frame.",
+		"0-based index of this crop, for keying its saved artifacts.",
+		"How many crops the loop will run in total.",
+	)
+	FUNCTION = "execute"
+
+	def execute(self, item):
+		item = _first(item)
+		if not isinstance(item, dict) or "crop_info" not in item:
+			raise RuntimeError(
+				"Bbox Crop Item: `item` must be one item of Bbox Crop · Multi's "
+				"item_list, taken from ForeachListBegin's `item` output.")
+		return (item["image"], item["crop_info"],
+				int(item.get("crop_index", 0)), int(item.get("crop_count", 1)))

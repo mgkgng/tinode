@@ -51,6 +51,25 @@ incoming frame; `x / y / width / height` update live and are saved with the
 workflow. One box applies to every frame, so image → image and video → video.
 Emits `TI_CROP_XFORM` for the round trip back.
 
+### Bbox Crop · Multi
+The same editor, but you draw **as many boxes as you like** on the frame (drag
+on empty canvas to add one, right-click a box to drop it). Each box becomes its
+own crop of the whole batch, with its own `crop_info`, and `crop_index` keys
+whatever that crop gets saved as.
+
+There are **two ways to consume the crops** — wire one, leave the other empty:
+
+| | `crops` / `crop_info` / `crop_index` | `item_list` |
+|---|---|---|
+| what it is | a **ComfyUI list** | one **`ITEM_LIST`** value |
+| how it runs | list expansion: whatever you wire runs once per crop | a real loop: **▶Foreach List** walks the crops one at a time |
+| loop node | none needed | ▶Foreach List / Foreach List◀, unpack `item` with **Bbox Crop Item** |
+| use it when | the per-crop branch is fire-and-forget | you need to **accumulate** across crops, or a **Validation Gate** that stops on each crop in turn — and it nests inside an outer per-clip Foreach |
+
+**Seed the inner `initial_input`** (with `count`, say) exactly as you would the
+outer one, or Inspire takes crop 0 as the loop's initial value and never
+processes it.
+
 ### Pick Segments
 Feed it the `segments` output of a patched EasySAM3 Segment plus the original
 image. Scrub frames (slider, ◀ ▶, arrow keys); every detection is a colorized
@@ -88,6 +107,8 @@ against, so it is never silently re-applied to a different clip.
 | **Mask Bbox Crop** | Crop to a mask's bounding box + padding, rounded to `divisible_by`. Per-frame boxes are temporally smoothed so the crop stops swimming; `shared_bbox` gives one static box instead. |
 | **Mask Crop · Center Fill** | Crop each mask onto its own square black canvas, scaled to fill — for crowd → per-face pipelines. |
 | **Bbox Crop · Manual** | Interactive crop (above). |
+| **Bbox Crop · Multi** | Draw *many* boxes on one frame and get one crop per box (above). Two outputs to pick from: `crops`/`crop_info`/`crop_index` are a **ComfyUI list** (downstream runs once per crop, no loop node), `item_list` is an **`ITEM_LIST`** for ▶Foreach List. |
+| **Bbox Crop Item** | Unpacks one ▶Foreach List `item` from Bbox Crop · Multi's `item_list` back into `crop` / `crop_info` / `crop_index` (+ `crop_count`), so the graph inside the loop is wired exactly like the one outside it. |
 | **Crop By Info** | Re-cut the exact crop a saved `crop_info` describes (the forward of Paste Back) — a native-scale slice, bit-exact, no coords to re-enter. Rejects rescaled crop_info rather than resample. |
 | **Mask Crop Paste Back** | Composite processed crops back using `crop_info`. Blends through an optional mask, `gaussian`/`box` feathered; **bit-exact outside the mask**, and no resample when the crop isn't rescaled. |
 
@@ -252,13 +273,28 @@ For removing an object across many clips, split the work in two passes with a
 disk handoff — so masking (light, reviewable) and removal (heavy, unattended)
 don't have to run together, and a crash mid-batch never re-does finished work.
 
-**Phase 1 — author masks** (loop over `Load Videos`):
+**Phase 1 — author masks** (two nested loops: clips outside, crops inside):
 ```
-item(VIDEO) ─┬─► Get Video Components ─► Bbox Crop · Manual ─► SAM3 ─► … ─► mask
-             │                                    └─────────► crop_info ─┐
-             └─► Video Source Path ─► stem ──────────────────────────────┤
-                                                     mask + crop_info + stem ─► Save Crop & Mask ─► ForeachListEnd
+Load Videos ─► ▶Foreach List ─ item(VIDEO) ─┬─► Get Video Components ─► frames ─► Bbox Crop · Multi
+     (per clip)                             └─► Video Source Path ─► stem ┐        │ item_list + count
+                                                                          │        ▼
+                                             ┌────────────────────────────┼─  ▶Foreach List (per crop)
+                                             │                            │        │ item
+                                             │                            │        ▼
+                                             │                            │   Bbox Crop Item ─► crop ─► SAM3 ─► mask
+                                             │                            │        └─► crop_info, crop_index ─┐
+                                             │                            └──────────────── stem ─────────────┤
+                                             │       mask ─► Validation Gate ─────────────────────────────────┤
+                                             │                            Save Crop & Mask ◄──────────────────┘
+                                             │                                     │ manifest_path
+                                             └── Foreach List◀ (per crop) ◄────────┘
+                                                          │ result
+                                                          ▼
+                                                  Foreach List◀ (per clip)
 ```
+The inner loop is what makes **Validation Gate** usable here: crops are masked
+and approved **one at a time**, in order, instead of the whole per-crop branch
+fanning out at once. Ready-made: `workflows/phase1_mask_authoring.json`.
 `Save Crop & Mask` writes, per clip under `output/ti_masks/<stem>/`: the mask as a
 **lossless** PNG sequence in crop space, the `crop_info`, and a manifest. The
 source is never re-encoded.

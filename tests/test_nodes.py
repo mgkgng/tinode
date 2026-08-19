@@ -1123,7 +1123,7 @@ def test_bbox_multi_emits_one_crop_per_box():
 	img = torch.rand(4, 100, 120, 3)
 	boxes = json.dumps([{"x": 10, "y": 20, "w": 40, "h": 30},
 						{"x": 60, "y": 5, "w": 32, "h": 48}])
-	crops, infos, idx = BboxCropMulti().execute(img, boxes=boxes)
+	crops, infos, idx, item_list, count = BboxCropMulti().execute(img, boxes=boxes)
 	assert idx == [0, 1]
 	assert len(crops) == 2 and len(infos) == 2
 	assert tuple(crops[0].shape) == (4, 30, 40, 3)
@@ -1135,13 +1135,42 @@ def test_bbox_multi_emits_one_crop_per_box():
 	assert torch.equal(back, crops[1])
 
 
+def test_bbox_multi_item_list_drives_a_foreach_loop():
+	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti, BboxCropItem
+	img = torch.rand(3, 100, 120, 3)
+	boxes = json.dumps([{"x": 10, "y": 20, "w": 40, "h": 30},
+						{"x": 60, "y": 5, "w": 32, "h": 48}])
+	crops, infos, idx, item_list, count = BboxCropMulti().execute(img, boxes=boxes)
+
+	# item_list is what Inspire's ForeachListBegin consumes: ONE plain list value,
+	# not a per-item ComfyUI list. Only the first three outputs expand.
+	assert BboxCropMulti.OUTPUT_IS_LIST == (True, True, True, False, False)
+	assert isinstance(item_list, list) and len(item_list) == 2 and count == 2
+	assert item_list is not crops and item_list is not infos  # the loop slices it
+
+	# Walking the loop yields exactly what the list-expansion path yields.
+	for i, it in enumerate(item_list):
+		crop, info, index, total = BboxCropItem().execute(it)
+		assert torch.equal(crop, crops[i]) and info is infos[i]
+		assert index == i and total == 2
+
+	# ForeachListBegin hands `item` through an any-type wire, so a stray value
+	# must fail loudly rather than crash deeper in the graph.
+	try:
+		BboxCropItem().execute("not an item")
+	except RuntimeError as exc:
+		assert "Bbox Crop · Multi" in str(exc)
+	else:
+		raise AssertionError("Bbox Crop Item must reject a non-item input")
+
+
 def test_composite_crops_pastes_multiple_crops_back():
 	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti
 	from tinode.nodes.image.removal_pass import CompositeCrops
 	img = torch.rand(2, 90, 120, 3)
 	boxes = json.dumps([{"x": 10, "y": 10, "w": 40, "h": 30},
 						{"x": 70, "y": 40, "w": 32, "h": 40}])
-	crops, infos, idx = BboxCropMulti().execute(img, boxes=boxes)
+	crops, infos, idx, _items, _n = BboxCropMulti().execute(img, boxes=boxes)
 	# full masks per crop -> compositing the untouched crops back is the identity
 	masks = [torch.ones(c.shape[0], c.shape[1], c.shape[2]) for c in crops]
 	(out,) = CompositeCrops().execute(img, crops, infos, masks=masks, feather=0)
@@ -1151,7 +1180,7 @@ def test_composite_crops_pastes_multiple_crops_back():
 def test_bbox_multi_empty_is_whole_frame():
 	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti
 	img = torch.rand(2, 40, 50, 3)
-	crops, infos, idx = BboxCropMulti().execute(img, boxes="[]")
+	crops, infos, idx, _items, _n = BboxCropMulti().execute(img, boxes="[]")
 	assert len(crops) == 1 and idx == [0]
 	assert torch.equal(crops[0], img)                # whole frame
 
@@ -1284,6 +1313,53 @@ def test_video_source_path_extracts_stem():
 
 	assert video_source_path(FakeVideo()) == "/x/y/dicaire/DICAIRE T 01 pour test IA.mp4"
 	assert video_source_path(object()) is None       # not file-backed
+
+
+def test_shipped_workflows_match_the_node_signatures():
+	"""The workflow JSONs are hand-authored: they drift the moment a node's
+	outputs change (adding item_list to Bbox Crop · Multi shifted every slot
+	after it). Check every link resolves both ways and every TI_ node's slots
+	still exist, so a renamed or reordered output can't ship a dead workflow."""
+	from tinode.registry import NODE_CLASS_MAPPINGS
+
+	wf_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "workflows")
+	files = sorted(f for f in os.listdir(wf_dir) if f.endswith(".json"))
+	assert files, "no workflows to check"
+	for fname in files:
+		with open(os.path.join(wf_dir, fname)) as fh:
+			d = json.load(fh)
+		nodes = {n["id"]: n for n in d["nodes"]}
+		links = {l[0]: l for l in d["links"]}
+		for n in d["nodes"]:
+			where = f"{fname}: node {n['id']} ({n['type']})"
+			for slot, inp in enumerate(n.get("inputs", [])):
+				lid = inp.get("link")
+				if lid is None:
+					continue
+				assert lid in links, f"{where}.{inp['name']}: dangling link {lid}"
+				_, src, sslot, dst, dslot, _ = links[lid]
+				assert (dst, dslot) == (n["id"], slot), f"{where}: link {lid} lands elsewhere"
+				out = nodes[src]["outputs"][sslot]
+				assert lid in (out.get("links") or []), \
+					f"{where}: source {src}.{out['name']} does not list link {lid}"
+			for slot, out in enumerate(n.get("outputs", [])):
+				for lid in out.get("links") or []:
+					assert lid in links, f"{where}.{out['name']}: dangling link {lid}"
+					_, src, sslot, dst, dslot, _ = links[lid]
+					assert (src, sslot) == (n["id"], slot), f"{where}: link {lid} starts elsewhere"
+					assert nodes[dst]["inputs"][dslot].get("link") == lid, \
+						f"{where}: dest {dst} does not point back at link {lid}"
+			if not n["type"].startswith("TI_"):
+				continue                      # other packs' nodes: links only
+			assert n["type"] in NODE_CLASS_MAPPINGS, f"{where}: unknown node type"
+			cls = NODE_CLASS_MAPPINGS[n["type"]]
+			expected = list(getattr(cls, "RETURN_NAMES", None) or cls.RETURN_TYPES)
+			assert [o["name"] for o in n.get("outputs", [])] == expected, \
+				f"{where}: outputs out of sync with the node"
+			spec = cls.INPUT_TYPES()
+			valid = set(spec.get("required", {})) | set(spec.get("optional", {}))
+			for inp in n.get("inputs", []):
+				assert inp["name"] in valid, f"{where}: no input named {inp['name']!r}"
 
 
 # ------------------------------------------------------------------ runner

@@ -6,6 +6,12 @@ Inspire's ForeachListEnd must NOT be list-expanded too — feeding it the per-it
 list would run the loop end once per item and break iteration. Collect List sits
 in between: INPUT_IS_LIST gathers every item into one call and returns a single
 `count`, which also makes the loop end depend on all items finishing.
+
+This is the escape hatch for the list-expansion path. When you want the per-item
+work to be a real loop instead — sequential, accumulating, pausable — take the
+producer's `ITEM_LIST` output into a nested ▶Foreach List (Bbox Crop · Multi ->
+item_list -> Bbox Crop Item); the inner Foreach List◀ already collapses to one
+value and no Collect List is needed.
 """
 
 from __future__ import annotations
