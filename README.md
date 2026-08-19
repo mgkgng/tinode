@@ -408,6 +408,11 @@ JSON Lines is accepted as a fallback. Invalid JSON and an **empty array both
 raise** — an empty list makes ▶Foreach List throw an `IndexError`, and makes the
 ComfyUI-list output skip the whole branch in silence.
 
+### `tinode/util`
+| Node | Does |
+|---|---|
+| **Validation Gate** | Pause the running workflow until you approve. A floating panel shows a `preview` (e.g. the mask overlay) with Approve (Enter) / Reject (Esc); Approve passes the value through and the graph continues, Reject stops the run. Blocks the execution thread on an event released by a POST route, polling ComfyUI's interrupt so Cancel still works; headless (no server) it passes straight through so batch/cron runs never hang. This is what lets you curate every clip/crop by hand *inside* a Foreach loop — the loop waits for you at each item. |
+
 ### `tinode/face`
 | Node | Does |
 |---|---|

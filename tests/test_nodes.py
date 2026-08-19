@@ -1107,6 +1107,18 @@ def test_load_videos_empty_folder_errors():
 			raise AssertionError("expected a RuntimeError for an empty folder")
 
 
+def test_validation_gate_passes_through_headless_and_resolves():
+	from tinode.nodes.image.validation_gate import ValidationGate, ANY, _resolve
+	# Headless (no server in the test env): must pass the value straight through,
+	# never block a batch/cron run.
+	(out,) = ValidationGate().execute("payload")
+	assert out == "payload"
+	assert _resolve("reject") == "reject" and _resolve("Rejected") == "reject"
+	assert _resolve("approve") == "approve" and _resolve("anything else") == "approve"
+	# the wildcard type compares equal to any concrete type string
+	assert ANY == "MASK" and ANY == "IMAGE" and not (ANY != "TI_CROP_XFORM")
+
+
 def test_bbox_multi_emits_one_crop_per_box():
 	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti, parse_boxes, resolve_box
 	img = torch.rand(4, 100, 120, 3)
