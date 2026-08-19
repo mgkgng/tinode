@@ -128,9 +128,10 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Load Videos** | Gather many clips from a folder as an Inspire `ITEM_LIST` of **lazy** native `VIDEO`s, to loop over one at a time. `directory` is relative to `input/` or an absolute path; `pattern` filters by wildcard (`*.mp4`, `PROJECT_AMIR_*`); `filenames` (one per line, exact or wildcard) picks an exact set. Outputs `item_list`, a per-clip `videos` list, and `count`. |
 | **Save Video · Combine** | Encode an IMAGE batch to mp4 / webm / lossless PNG frames via ffmpeg, with the colour controls (`color_range`, `colorspace`, `pix_fmt`, `crf`) that keep a grade intact. Previews in the node. |
 | **Video Source Path** | The file a native `VIDEO` was loaded from → `stem` / `filename` / `path`. Keys a clip's saved artifacts inside a Foreach loop. |
-| **Save Masks** | Phase 1 of batch removal: write a clip's mask (lossless PNG, crop space) + its `crop_info` + a manifest, keyed by `stem`, under `output/<subdir>/`. The source video is never re-encoded. |
+| **Save Masks** | Phase 1 of batch removal: write a clip's mask (lossless PNG, crop space) + its `crop_info` + a manifest, keyed by `stem`, under `output/<subdir>/`. Optionally also exports the **cropped RGB frames** as a lossless PNG sequence (`crop_image`, 16- or 8-bit) so the removal step — even an external tool — works on the exact pixels. The source video is never re-encoded. |
 | **Load Masks** | Phase 2: scan the mask store → an Inspire `ITEM_LIST`, one item per clip. `source_dir` re-locates moved footage. |
 | **Load Mask** | Inside the phase-2 loop: one item → `video` (original, re-decoded) + `mask` (crop space) + `crop_info` + `stem`. |
+| **Load Cropped Frames** | Inside the phase-2 loop: one item → the lossless `crops` Save Masks exported (8- or 16-bit), for feeding removal without re-decoding. |
 
 #### Video Concatenate
 

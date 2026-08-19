@@ -57,6 +57,13 @@ class SaveMasks(TiNode):
 					"Folder under ComfyUI's output/ to write the mask store into."}),
 				"overwrite": ("BOOLEAN", {"default": True, "tooltip":
 					"Off = skip a clip whose mask is already saved (resume a batch)."}),
+				"crop_image": ("IMAGE", {"tooltip":
+					"Optional: the CROPPED frames to also export as a lossless PNG "
+					"sequence (crop/), so the removal step — even an external tool "
+					"— can work on the exact pixels. Wire the crop node's output."}),
+				"crop_bit_depth": (["16", "8"], {"default": "16", "tooltip":
+					"16 = exact for a 10-bit master (needs cv2); 8 = smaller, exact "
+					"for an 8-bit source. Only used when crop_image is connected."}),
 			},
 		}
 
@@ -69,7 +76,8 @@ class SaveMasks(TiNode):
 	FUNCTION = "execute"
 
 	def execute(self, mask, crop_info, stem, source_path="", fps=0.0,
-				subdir=store.DEFAULT_SUBDIR, overwrite=True):
+				subdir=store.DEFAULT_SUBDIR, overwrite=True,
+				crop_image=None, crop_bit_depth="16"):
 		import numpy as np  # noqa: PLC0415
 		from PIL import Image  # noqa: PLC0415
 
@@ -110,14 +118,22 @@ class SaveMasks(TiNode):
 		for i in range(N):
 			Image.fromarray(arr[i], mode="L").save(
 				os.path.join(mdir, store.MASK_PATTERN % i), compress_level=6)
-		# Remove any stale frames from a previous, longer save of the same clip.
-		i = N
-		while True:
-			stale = os.path.join(mdir, store.MASK_PATTERN % i)
-			if not os.path.exists(stale):
-				break
-			os.remove(stale)
-			i += 1
+		self._prune_stale(mdir, store.MASK_PATTERN, N)
+
+		# Optional: also export the cropped RGB frames, losslessly, so the removal
+		# step (even an external tool) works on the exact pixels.
+		crop = first(crop_image)
+		crop_saved = False
+		crop_bits = int(first(crop_bit_depth, "16"))
+		if isinstance(crop, torch.Tensor):
+			c = crop if crop.dim() == 4 else crop.unsqueeze(0)
+			if c.shape[0] != N:
+				print(f"[tinode] Save Masks: crop_image has {c.shape[0]} frames but "
+					  f"mask has {N} — saving all crop frames anyway.")
+			cframes_dir = store.crop_dir(cdir)
+			store.save_rgb_sequence(c, cframes_dir, store.CROP_PATTERN, crop_bits)
+			self._prune_stale(cframes_dir, store.CROP_PATTERN, int(c.shape[0]))
+			crop_saved = True
 
 		manifest = {
 			"tinode_mask_manifest": store.MANIFEST_VERSION,
@@ -130,8 +146,24 @@ class SaveMasks(TiNode):
 			"crop_info": crop_info,
 			"mask_subfolder": store.MASK_SUBFOLDER,
 			"mask_pattern": store.MASK_PATTERN,
+			"has_crop": crop_saved,
+			"crop_subfolder": store.CROP_SUBFOLDER if crop_saved else "",
+			"crop_pattern": store.CROP_PATTERN,
+			"crop_bit_depth": crop_bits if crop_saved else 0,
 		}
 		store.write_manifest(cdir, manifest)
-		print(f"[tinode] Save Masks: wrote {N} mask frame(s) for {stem!r} -> {cdir}")
-		return {"ui": {"ti_saved_mask": [{"stem": stem, "frames": N}]},
+		extra = f" + {crop_bits}-bit crops" if crop_saved else ""
+		print(f"[tinode] Save Masks: wrote {N} mask frame(s){extra} for {stem!r} -> {cdir}")
+		return {"ui": {"ti_saved_mask": [{"stem": stem, "frames": N, "crop": crop_saved}]},
 				"result": (store.manifest_path(cdir),)}
+
+	@staticmethod
+	def _prune_stale(folder, pattern, keep):
+		"""Delete frames >= `keep` left by a previous, longer save of this clip."""
+		i = keep
+		while True:
+			stale = os.path.join(folder, pattern % i)
+			if not os.path.exists(stale):
+				break
+			os.remove(stale)
+			i += 1

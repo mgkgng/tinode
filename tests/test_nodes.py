@@ -1196,6 +1196,19 @@ def test_mask_store_roundtrip(tmp_path=None):
 		assert m.max() == 1.0 and m.min() == 0.0     # exact 8-bit round trip
 
 
+def test_crop_sequence_roundtrip_8bit_and_16bit():
+	# The lossless RGB export/import both directions, at each bit depth.
+	img = torch.rand(3, 12, 16, 3)
+	for bits, tol in ((8, 1.0 / 255), (16, 1.0 / 65535)):
+		with tempfile.TemporaryDirectory() as d:
+			n = _mstore.save_rgb_sequence(img, d, _mstore.CROP_PATTERN, bits)
+			assert n == 3
+			back = _mstore.load_rgb_sequence(d, _mstore.CROP_PATTERN, 3)
+			assert tuple(back.shape) == (3, 12, 16, 3)
+			# quantisation to `bits` is the only difference; within one step.
+			assert (back - img).abs().max().item() <= tol + 1e-6, f"{bits}-bit drift"
+
+
 def test_video_source_path_extracts_stem():
 	class FakeVideo:
 		def get_stream_source(self):

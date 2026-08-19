@@ -186,3 +186,38 @@ class LoadMask(TiNode):
 		crop_info = item["crop_info"]
 		video = VideoFromFile(source_path)
 		return (video, mask, crop_info, stem, int(item.get("frame_count", mask.shape[0])))
+
+
+@register
+class LoadCroppedFrames(TiNode):
+	DISPLAY_NAME = "Load Cropped Frames (ti)"
+	CATEGORY = "tinode/video"
+
+	@classmethod
+	def INPUT_TYPES(cls):
+		return {"required": {"item": ("TI_MASK_ITEM", {"tooltip":
+			"An item from Load Masks. Reads the lossless crop/ sequence Save "
+			"Masks exported (crop_image must have been connected there)."})}}
+
+	RETURN_TYPES = ("IMAGE", "INT")
+	RETURN_NAMES = ("crops", "frame_count")
+	OUTPUT_TOOLTIPS = (
+		"The cropped frames, exactly as exported (8- or 16-bit, lossless).",
+		"Number of frames.",
+	)
+	FUNCTION = "execute"
+
+	def execute(self, item):
+		item = first(item)
+		if not isinstance(item, dict):
+			raise RuntimeError(
+				"Load Cropped Frames: `item` must come from Load Masks.")
+		if not item.get("has_crop"):
+			raise RuntimeError(
+				f"Load Cropped Frames: {item.get('stem','this clip')!r} has no "
+				"exported crops. Connect crop_image on Save Masks in phase 1, or "
+				"rebuild the crop with Crop By Info from the video + crop_info.")
+		cdir = os.path.join(item["clip_dir"], item.get("crop_subfolder", store.CROP_SUBFOLDER))
+		n = int(item.get("frame_count", 0))
+		crops = store.load_rgb_sequence(cdir, item.get("crop_pattern", store.CROP_PATTERN), n)
+		return (crops, n)
