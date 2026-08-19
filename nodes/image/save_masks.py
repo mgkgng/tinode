@@ -1,25 +1,20 @@
-"""Save Crop & Mask — persist a clip's crop + mask + transform for a later pass.
+"""Save Crop & Mask — persist one crop's mask + RGB + transform + prompt.
 
-Phase 1 of the two-workflow object-removal pipeline. After you've cropped a
-video and masked the thing to remove, this writes, keyed by the source clip's
-stem: the mask (lossless), optionally the cropped RGB frames (lossless), and the
-crop_info that maps the crop back to the original frame. Phase 2 (Load Masks)
-reads them to run removal and paste it in.
+Phase 1 of the multi-crop object-removal pipeline. A clip has several crops
+(from Bbox Crop · Multi); this saves ONE of them, keyed by the clip's stem and
+the crop_index, so the whole thing runs per-crop under list expansion and each
+crop lands in its own folder <stem>/<crop_index>/.
 
-(The node id stays TI_SaveMasks for backward compatibility; the display name is
-Save Crop & Mask.)
+Writes, losslessly:
+  * the mask (crop space) as an 8-bit PNG sequence — exact for a binary mask;
+  * optionally the cropped RGB frames (8/16-bit) so removal — even an external
+    tool — works on the exact pixels;
+  * the crop_info that maps the crop back to the full frame;
+  * this crop's VOID prompt (positive/negative), so phase 2 reuses it.
 
-Nothing here is lossy:
-  * the mask is saved as a lossless PNG sequence in CROP space — 8-bit is exact
-    for the binary masks SAM3 produces (and 256 levels is plenty for a soft
-    edge, which anyway gets re-feathered at paste time);
-  * the SOURCE video is never touched or re-encoded — only the mask and a small
-    JSON manifest are written, so there is no generation loss. Phase 2
-    re-decodes the untouched original and reproduces the crop from crop_info.
-
-Drop it at the end of a Foreach loop over Load Videos: wire the mask, the
-crop_info, and the clip's stem (from Video Source Path), then send its output to
-ForeachListEnd so the loop advances to the next clip.
+The SOURCE video is never touched or re-encoded — phase 2 re-decodes the
+untouched original and reproduces the crop from crop_info. (Node id stays
+TI_SaveMasks for backward compatibility; the display name is Save Crop & Mask.)
 """
 
 from __future__ import annotations
@@ -36,8 +31,6 @@ from . import _mask_store as store
 
 @register
 class SaveMasks(TiNode):
-	# Display name is "Save Crop & Mask"; the id stays TI_SaveMasks so existing
-	# workflows keep loading.
 	NODE_ID = "SaveMasks"
 	DISPLAY_NAME = "Save Crop & Mask (ti)"
 	CATEGORY = "tinode/video"
@@ -52,125 +45,116 @@ class SaveMasks(TiNode):
 				"crop_info": ("TI_CROP_XFORM", {"tooltip":
 					"From the crop node — maps the crop back to the full frame."}),
 				"stem": ("STRING", {"default": "", "tooltip":
-					"Key for this clip (from Video Source Path). One folder per stem."}),
+					"Clip key (from Video Source Path)."}),
+				"crop_index": ("INT", {"default": 0, "min": 0, "max": 9999, "step": 1,
+					"tooltip": "Which crop of this clip (from Bbox Crop · Multi)."}),
 			},
 			"optional": {
-				"source_path": ("STRING", {"default": "", "tooltip":
-					"Absolute path to the source video, stored so phase 2 can find "
-					"it. From Video Source Path's `path` output."}),
-				"fps": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 240.0, "step": 0.01,
-					"tooltip": "Recorded in the manifest (informational)."}),
-				"subdir": ("STRING", {"default": store.DEFAULT_SUBDIR, "tooltip":
-					"Folder under ComfyUI's output/ to write the mask store into."}),
-				"overwrite": ("BOOLEAN", {"default": True, "tooltip":
-					"Off = skip a clip whose mask is already saved (resume a batch)."}),
 				"crop_image": ("IMAGE", {"tooltip":
-					"Optional: the CROPPED frames to also export as a lossless PNG "
-					"sequence (crop/), so the removal step — even an external tool "
-					"— can work on the exact pixels. Wire the crop node's output."}),
+					"Optional: the CROPPED frames to also export losslessly (crop/), "
+					"so removal works on the exact pixels. Wire the crop output."}),
+				"positive_prompt": ("STRING", {"default": "", "multiline": True,
+					"tooltip": "VOID prompt for THIS crop — stored and reused in phase 2."}),
+				"negative_prompt": ("STRING", {"default": "", "multiline": True,
+					"tooltip": "Negative prompt for this crop."}),
+				"source_path": ("STRING", {"default": "", "tooltip":
+					"Absolute path to the source video (from Video Source Path)."}),
+				"fps": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 240.0, "step": 0.01}),
+				"subdir": ("STRING", {"default": store.DEFAULT_SUBDIR}),
 				"crop_bit_depth": (["16", "8"], {"default": "16", "tooltip":
-					"16 = exact for a 10-bit master (needs cv2); 8 = smaller, exact "
-					"for an 8-bit source. Only used when crop_image is connected."}),
+					"Crop export depth. 16 = exact for a 10-bit master (needs cv2)."}),
+				"overwrite": ("BOOLEAN", {"default": True, "tooltip":
+					"Off = skip a crop already saved (resume a batch)."}),
 			},
 		}
 
 	RETURN_TYPES = ("STRING",)
 	RETURN_NAMES = ("manifest_path",)
 	OUTPUT_TOOLTIPS = (
-		"Path to the written manifest.json — wire to ForeachListEnd's "
-		"intermediate_output to advance the loop.",
+		"Path to the written manifest.json — wire to ForeachListEnd to advance.",
 	)
 	FUNCTION = "execute"
 
-	def execute(self, mask, crop_info, stem, source_path="", fps=0.0,
-				subdir=store.DEFAULT_SUBDIR, overwrite=True,
-				crop_image=None, crop_bit_depth="16"):
+	def execute(self, mask, crop_info, stem, crop_index=0, crop_image=None,
+				positive_prompt="", negative_prompt="", source_path="", fps=0.0,
+				subdir=store.DEFAULT_SUBDIR, crop_bit_depth="16", overwrite=True):
 		import numpy as np  # noqa: PLC0415
 		from PIL import Image  # noqa: PLC0415
 
 		crop_info = first(crop_info)
 		validate_crop_xform(crop_info)
 		stem = os.path.basename(str(first(stem, "")).strip())
+		crop_index = int(first(crop_index, 0))
 		if not stem:
 			raise RuntimeError(
-				"Save Crop & Mask: empty stem. Wire Video Source Path's `stem` output "
-				"here so each clip's mask gets its own folder.")
+				"Save Crop & Mask: empty stem. Wire Video Source Path's `stem` here.")
 
 		m = first(mask)
 		if not isinstance(m, torch.Tensor):
 			raise RuntimeError("Save Crop & Mask: `mask` must be a MASK tensor.")
 		if m.dim() == 2:
-			m = m.unsqueeze(0)                          # [ch,cw] -> [1,ch,cw]
+			m = m.unsqueeze(0)
 		if m.dim() != 3:
 			raise RuntimeError(
-				f"Save Crop & Mask: expected a [frames,H,W] mask, got shape {tuple(m.shape)}.")
+				f"Save Crop & Mask: expected a [frames,H,W] mask, got {tuple(m.shape)}.")
 		N, ch, cw = m.shape
 
 		root = store.output_root(subdir)
-		cdir = store.clip_dir(root, stem)
-		mdir = store.mask_dir(cdir)
+		idir = store.item_dir(root, stem, crop_index)
+		mdir = store.mask_dir(idir)
 
-		if not overwrite and os.path.isfile(store.manifest_path(cdir)):
+		if not overwrite and os.path.isfile(store.manifest_path(idir)):
 			try:
-				prev = store.read_manifest(cdir)
-				if int(prev.get("frame_count", -1)) == N:
-					return {"ui": {"ti_saved_mask": [{"stem": stem, "skipped": True}]},
-							"result": (store.manifest_path(cdir),)}
-			except Exception:  # noqa: BLE001 — a broken manifest just gets rewritten
+				if int(store.read_manifest(idir).get("frame_count", -1)) == N:
+					return {"ui": {"ti_saved_mask": [{"stem": stem, "crop": crop_index,
+													  "skipped": True}]},
+							"result": (store.manifest_path(idir),)}
+			except Exception:  # noqa: BLE001
 				pass
 
 		os.makedirs(mdir, exist_ok=True)
-		# Lossless: exact 8-bit for a binary mask; round-to-nearest, no dithering.
 		arr = (m.detach().clamp(0, 1).cpu().numpy() * 255.0 + 0.5).astype(np.uint8)
 		for i in range(N):
 			Image.fromarray(arr[i], mode="L").save(
 				os.path.join(mdir, store.MASK_PATTERN % i), compress_level=6)
-		self._prune_stale(mdir, store.MASK_PATTERN, N)
+		store.prune_stale(mdir, store.MASK_PATTERN, N)
 
-		# Optional: also export the cropped RGB frames, losslessly, so the removal
-		# step (even an external tool) works on the exact pixels.
 		crop = first(crop_image)
 		crop_saved = False
 		crop_bits = int(first(crop_bit_depth, "16"))
 		if isinstance(crop, torch.Tensor):
 			c = crop if crop.dim() == 4 else crop.unsqueeze(0)
-			if c.shape[0] != N:
-				print(f"[tinode] Save Crop & Mask: crop_image has {c.shape[0]} frames but "
-					  f"mask has {N} — saving all crop frames anyway.")
-			cframes_dir = store.crop_dir(cdir)
-			store.save_rgb_sequence(c, cframes_dir, store.CROP_PATTERN, crop_bits)
-			self._prune_stale(cframes_dir, store.CROP_PATTERN, int(c.shape[0]))
+			cframes = store.crop_dir(idir)
+			store.save_rgb_sequence(c, cframes, store.CROP_PATTERN, crop_bits)
+			store.prune_stale(cframes, store.CROP_PATTERN, int(c.shape[0]))
 			crop_saved = True
 
 		manifest = {
 			"tinode_mask_manifest": store.MANIFEST_VERSION,
 			"stem": stem,
+			"crop_index": crop_index,
 			"source_path": str(first(source_path, "")),
 			"frame_count": int(N),
 			"crop_height": int(ch),
 			"crop_width": int(cw),
 			"fps": float(first(fps, 0.0)),
 			"crop_info": crop_info,
+			"positive_prompt": str(first(positive_prompt, "")),
+			"negative_prompt": str(first(negative_prompt, "")),
 			"mask_subfolder": store.MASK_SUBFOLDER,
 			"mask_pattern": store.MASK_PATTERN,
 			"has_crop": crop_saved,
 			"crop_subfolder": store.CROP_SUBFOLDER if crop_saved else "",
 			"crop_pattern": store.CROP_PATTERN,
 			"crop_bit_depth": crop_bits if crop_saved else 0,
+			"has_filled": False,
+			"filled_subfolder": store.FILLED_SUBFOLDER,
+			"filled_pattern": store.FILLED_PATTERN,
 		}
-		store.write_manifest(cdir, manifest)
+		store.write_manifest(idir, manifest)
 		extra = f" + {crop_bits}-bit crops" if crop_saved else ""
-		print(f"[tinode] Save Crop & Mask: wrote {N} mask frame(s){extra} for {stem!r} -> {cdir}")
-		return {"ui": {"ti_saved_mask": [{"stem": stem, "frames": N, "crop": crop_saved}]},
-				"result": (store.manifest_path(cdir),)}
-
-	@staticmethod
-	def _prune_stale(folder, pattern, keep):
-		"""Delete frames >= `keep` left by a previous, longer save of this clip."""
-		i = keep
-		while True:
-			stale = os.path.join(folder, pattern % i)
-			if not os.path.exists(stale):
-				break
-			os.remove(stale)
-			i += 1
+		print(f"[tinode] Save Crop & Mask: {stem!r} crop {crop_index} — "
+			  f"{N} mask frame(s){extra} -> {idir}")
+		return {"ui": {"ti_saved_mask": [{"stem": stem, "crop": crop_index,
+										  "frames": N, "crop_saved": crop_saved}]},
+				"result": (store.manifest_path(idir),)}

@@ -1,15 +1,17 @@
-"""Shared on-disk layout for the mask handoff between the two removal passes.
+"""Shared on-disk layout for the crop/mask handoff across the removal passes.
 
-Save Crop & Mask (phase 1) writes it, Load Masks (phase 2) reads it. Keeping the
-layout in one place means the two nodes can never drift out of agreement.
+One folder PER CROP (a clip has several), so multi-crop removal is just more
+folders. Phase 1 (Save Crop & Mask) writes mask/ + crop/ + manifest; phase 2a
+(Save Filled) adds filled/; phase 2b reads them back to composite. Keeping the
+layout here means every node agrees on it.
 
-    <output>/<subdir>/<stem>/
-        manifest.json          # crop_info + frame count + source path + fps
-        mask/00000.png ...      # lossless 8-bit, crop-space, one per frame
+    <output>/<subdir>/<stem>/<crop_index:02d>/
+        manifest.json          # crop_info, frame count, source, fps, prompt
+        mask/00000.png ...      # lossless 8-bit, crop space, the region to remove
+        crop/00000.png ...      # lossless RGB crop (8/16-bit), what VOID edits
+        filled/00000.png ...    # VOID's result, written in phase 2a
 
-The mask is stored in CROP space (small) alongside the crop_info that maps it
-back to the original frame; the source video itself is never copied or
-re-encoded, so nothing here is lossy.
+The source video is never copied or re-encoded — only crops/masks are stored.
 """
 
 from __future__ import annotations
@@ -20,9 +22,11 @@ import os
 MANIFEST_NAME = "manifest.json"
 MASK_SUBFOLDER = "mask"
 CROP_SUBFOLDER = "crop"
+FILLED_SUBFOLDER = "filled"
 MASK_PATTERN = "%05d.png"
 CROP_PATTERN = "%05d.png"
-MANIFEST_VERSION = 1
+FILLED_PATTERN = "%05d.png"
+MANIFEST_VERSION = 2
 DEFAULT_SUBDIR = "ti_masks"
 
 
@@ -33,21 +37,57 @@ def output_root(subdir=DEFAULT_SUBDIR):
 	return os.path.join(folder_paths.get_output_directory(), subdir or DEFAULT_SUBDIR)
 
 
+def _safe(part):
+	# guard a stem/index that might contain path separators (traversal)
+	return os.path.basename(str(part).strip())
+
+
 def clip_dir(root, stem):
-	# basename guards against a stem that contains path separators (traversal).
-	return os.path.join(root, os.path.basename(str(stem).strip()))
+	"""The folder holding all of one clip's crops."""
+	return os.path.join(root, _safe(stem))
 
 
-def manifest_path(cdir):
-	return os.path.join(cdir, MANIFEST_NAME)
+def item_dir(root, stem, crop_index):
+	"""The folder for one crop of one clip."""
+	return os.path.join(root, _safe(stem), f"{int(crop_index):02d}")
 
 
-def mask_dir(cdir):
-	return os.path.join(cdir, MASK_SUBFOLDER)
+def manifest_path(idir):
+	return os.path.join(idir, MANIFEST_NAME)
 
 
-def crop_dir(cdir):
-	return os.path.join(cdir, CROP_SUBFOLDER)
+def mask_dir(idir):
+	return os.path.join(idir, MASK_SUBFOLDER)
+
+
+def crop_dir(idir):
+	return os.path.join(idir, CROP_SUBFOLDER)
+
+
+def filled_dir(idir):
+	return os.path.join(idir, FILLED_SUBFOLDER)
+
+
+def write_manifest(idir, manifest):
+	os.makedirs(idir, exist_ok=True)
+	with open(manifest_path(idir), "w", encoding="utf-8") as fh:
+		json.dump(manifest, fh, ensure_ascii=False, indent=2)
+
+
+def read_manifest(idir):
+	with open(manifest_path(idir), "r", encoding="utf-8") as fh:
+		return json.load(fh)
+
+
+def prune_stale(folder, pattern, keep):
+	"""Delete frames >= `keep` left by a previous, longer save of this crop."""
+	i = keep
+	while True:
+		stale = os.path.join(folder, pattern % i)
+		if not os.path.exists(stale):
+			break
+		os.remove(stale)
+		i += 1
 
 
 def save_rgb_sequence(imgs, out_dir, pattern, bit_depth):
@@ -58,9 +98,8 @@ def save_rgb_sequence(imgs, out_dir, pattern, bit_depth):
 	goes through PIL. Round-to-nearest, no dithering. Returns the frame count.
 	"""
 	import numpy as np  # noqa: PLC0415
-	import os as _os  # noqa: PLC0415
 
-	_os.makedirs(out_dir, exist_ok=True)
+	os.makedirs(out_dir, exist_ok=True)
 	x = imgs[..., :3].detach().clamp(0, 1).cpu().numpy()
 	n = int(x.shape[0])
 	if int(bit_depth) == 16:
@@ -68,12 +107,12 @@ def save_rgb_sequence(imgs, out_dir, pattern, bit_depth):
 			import cv2  # noqa: PLC0415
 		except Exception as exc:  # noqa: BLE001
 			raise RuntimeError(
-				"Save Crop & Mask: 16-bit crop export needs OpenCV (cv2), which isn't "
-				"available. Set crop_bit_depth to 8, or install opencv-python."
+				"16-bit export needs OpenCV (cv2). Set bit depth to 8, or install "
+				"opencv-python."
 			) from exc
 		arr = (x * 65535.0 + 0.5).astype(np.uint16)
 		for i in range(n):
-			cv2.imwrite(_os.path.join(out_dir, pattern % i),
+			cv2.imwrite(os.path.join(out_dir, pattern % i),
 						cv2.cvtColor(arr[i], cv2.COLOR_RGB2BGR))
 	else:
 		from PIL import Image  # noqa: PLC0415
@@ -81,22 +120,20 @@ def save_rgb_sequence(imgs, out_dir, pattern, bit_depth):
 		arr = (x * 255.0 + 0.5).astype(np.uint8)
 		for i in range(n):
 			Image.fromarray(arr[i], mode="RGB").save(
-				_os.path.join(out_dir, pattern % i), compress_level=6)
+				os.path.join(out_dir, pattern % i), compress_level=6)
 	return n
 
 
 def load_rgb_sequence(in_dir, pattern, frame_count):
 	"""Load a PNG sequence back to an [N,H,W,3] float tensor (0..1), 8- or 16-bit."""
 	import numpy as np  # noqa: PLC0415
-	import os as _os  # noqa: PLC0415
-
 	import torch  # noqa: PLC0415
 
 	frames = []
 	for i in range(int(frame_count)):
-		p = _os.path.join(in_dir, pattern % i)
-		if not _os.path.isfile(p):
-			raise RuntimeError(f"Load Cropped Frames: missing frame {p}")
+		p = os.path.join(in_dir, pattern % i)
+		if not os.path.isfile(p):
+			raise RuntimeError(f"missing frame {p}")
 		try:
 			import cv2  # noqa: PLC0415
 
@@ -113,11 +150,44 @@ def load_rgb_sequence(in_dir, pattern, frame_count):
 	return torch.from_numpy(np.stack(frames))
 
 
-def write_manifest(cdir, manifest):
-	with open(manifest_path(cdir), "w", encoding="utf-8") as fh:
-		json.dump(manifest, fh, ensure_ascii=False, indent=2)
+def load_mask_sequence(in_dir, pattern, frame_count):
+	"""Load a mask PNG sequence into a [frames, H, W] float tensor (0..1)."""
+	import numpy as np  # noqa: PLC0415
+	from PIL import Image  # noqa: PLC0415
+	import torch  # noqa: PLC0415
+
+	frames = []
+	for i in range(int(frame_count)):
+		p = os.path.join(in_dir, pattern % i)
+		if not os.path.isfile(p):
+			raise RuntimeError(f"missing mask frame {p}")
+		frames.append(np.asarray(Image.open(p).convert("L"), dtype=np.uint8))
+	return torch.from_numpy(np.stack(frames)).float() / 255.0
 
 
-def read_manifest(cdir):
-	with open(manifest_path(cdir), "r", encoding="utf-8") as fh:
-		return json.load(fh)
+def scan_items(root):
+	"""Every saved crop under root, as augmented-manifest dicts, sorted.
+
+	One entry per <stem>/<NN>/ that has a manifest. Each carries absolute
+	`item_dir` / `mask_dir` / `crop_dir` / `filled_dir` plus its manifest fields.
+	Pure/testable — needs no comfy_api.
+	"""
+	if not os.path.isdir(root):
+		raise RuntimeError(f"store not found: {root}")
+	items = []
+	for stem in sorted(os.listdir(root)):
+		sdir = os.path.join(root, stem)
+		if not os.path.isdir(sdir):
+			continue
+		for nn in sorted(os.listdir(sdir)):
+			idir = os.path.join(sdir, nn)
+			if not os.path.isfile(manifest_path(idir)):
+				continue
+			man = read_manifest(idir)
+			it = dict(man)
+			it["item_dir"] = idir
+			it["mask_dir"] = mask_dir(idir)
+			it["crop_dir"] = crop_dir(idir)
+			it["filled_dir"] = filled_dir(idir)
+			items.append(it)
+	return items

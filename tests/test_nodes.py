@@ -58,7 +58,6 @@ from tinode.nodes.image.load_videos import resolve_dir, resolve_video_files  # n
 from tinode.nodes.image.crop_apply import CropByInfo  # noqa: E402
 from tinode.nodes.image.video_source_path import video_source_path  # noqa: E402
 from tinode.nodes.image import _mask_store as _mstore  # noqa: E402
-from tinode.nodes.image.load_masks import scan_store, load_mask_frames  # noqa: E402
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -1136,6 +1135,19 @@ def test_bbox_multi_emits_one_crop_per_box():
 	assert torch.equal(back, crops[1])
 
 
+def test_composite_crops_pastes_multiple_crops_back():
+	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti
+	from tinode.nodes.image.removal_pass import CompositeCrops
+	img = torch.rand(2, 90, 120, 3)
+	boxes = json.dumps([{"x": 10, "y": 10, "w": 40, "h": 30},
+						{"x": 70, "y": 40, "w": 32, "h": 40}])
+	crops, infos, idx = BboxCropMulti().execute(img, boxes=boxes)
+	# full masks per crop -> compositing the untouched crops back is the identity
+	masks = [torch.ones(c.shape[0], c.shape[1], c.shape[2]) for c in crops]
+	(out,) = CompositeCrops().execute(img, crops, infos, masks=masks, feather=0)
+	assert torch.equal(out, img), "identity composite of every crop must restore the frame"
+
+
 def test_bbox_multi_empty_is_whole_frame():
 	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti
 	img = torch.rand(2, 40, 50, 3)
@@ -1206,29 +1218,30 @@ def test_crop_by_info_rejects_rescaled_xform():
 		raise AssertionError("expected Crop By Info to reject a rescaled crop_info")
 
 
-def test_mask_store_roundtrip(tmp_path=None):
+def test_mask_store_per_crop_roundtrip():
 	import numpy as np
 	from PIL import Image
 
 	with tempfile.TemporaryDirectory() as root:
 		stem = "CLIP A"
-		cdir = _mstore.clip_dir(root, stem)
-		mdir = _mstore.mask_dir(cdir)
-		os.makedirs(mdir)
-		# three binary mask frames
-		for i in range(3):
-			a = np.zeros((8, 12), dtype=np.uint8)
-			a[i:i + 2, :] = 255
-			Image.fromarray(a, mode="L").save(os.path.join(mdir, _mstore.MASK_PATTERN % i))
-		_mstore.write_manifest(cdir, {
-			"tinode_mask_manifest": 1, "stem": stem, "source_path": "",
-			"frame_count": 3, "crop_height": 8, "crop_width": 12,
-			"mask_subfolder": "mask", "mask_pattern": _mstore.MASK_PATTERN,
-			"crop_info": {"H": 20, "W": 30, "C": 3, "items": [None]},
-		})
-		items = scan_store(root)
-		assert len(items) == 1 and items[0]["stem"] == stem
-		m = load_mask_frames(items[0]["mask_dir"], _mstore.MASK_PATTERN, 3)
+		# two crops of the same clip
+		for ci in (0, 1):
+			idir = _mstore.item_dir(root, stem, ci)
+			mdir = _mstore.mask_dir(idir)
+			os.makedirs(mdir)
+			for i in range(3):
+				a = np.zeros((8, 12), dtype=np.uint8)
+				a[i:i + 2, :] = 255
+				Image.fromarray(a, mode="L").save(os.path.join(mdir, _mstore.MASK_PATTERN % i))
+			_mstore.write_manifest(idir, {
+				"tinode_mask_manifest": 2, "stem": stem, "crop_index": ci,
+				"source_path": "", "frame_count": 3,
+				"mask_subfolder": "mask", "mask_pattern": _mstore.MASK_PATTERN,
+				"crop_info": {"H": 20, "W": 30, "C": 3, "items": [None]},
+			})
+		items = _mstore.scan_items(root)
+		assert len(items) == 2 and [it["crop_index"] for it in items] == [0, 1]
+		m = _mstore.load_mask_sequence(items[0]["mask_dir"], _mstore.MASK_PATTERN, 3)
 		assert tuple(m.shape) == (3, 8, 12)
 		assert m.max() == 1.0 and m.min() == 0.0     # exact 8-bit round trip
 
