@@ -43,6 +43,27 @@ def build_id_mask(segments, seg_id):
 	return m
 
 
+def bbox_mask(segments, height=None, width=None):
+	"""Filled RECTANGLES over every segment's bbox, as a [frames,H,W] mask.
+
+	The union of the boxes rather than the objects' outlines. An inpainting model
+	is usually happier being told to repaint a rectangle than a ragged silhouette:
+	the silhouette's edge is exactly where a slightly-tight mask leaves a halo of
+	the thing you removed, whereas a box gives the model clean margin on every
+	side. The cost is that everything else inside the box is regenerated too.
+	"""
+	H = int(height if height is not None else segments["height"])
+	W = int(width if width is not None else segments["width"])
+	frames = segments.get("frames", [])
+	N = int(segments.get("num_frames", len(frames)))
+	m = torch.zeros((N, H, W), dtype=torch.float32)
+	for f in range(N):
+		for s in (frames[f] if f < len(frames) else []):
+			x0, y0, x1, y1 = s["bbox"]
+			m[f, max(0, y0):min(H, y1), max(0, x0):min(W, x1)] = 1.0
+	return m
+
+
 def _parse_ids(spec, available):
 	"""'' / '-1' -> all ids (sorted); '5,7' -> those that exist, in that order."""
 	s = str(spec).strip()

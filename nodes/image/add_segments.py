@@ -30,6 +30,7 @@ import torch
 from ...base import TiNode
 from ...registry import register
 from ...schema import validate_segments
+from .segments_to_masks import bbox_mask
 from .pick_segments import (
 	_PREVIEW_MAX_SIDE, _img_signature, _seg_signature, color_for_id,
 	prune_asset_cache,
@@ -37,6 +38,10 @@ from .pick_segments import (
 
 # Manual ids start here so they never clash with SAM3 track ids.
 _MANUAL_ID_BASE = 1_000_000
+
+# Overlay tint for the existing mask. Hot magenta reads clearly on skin, cloth
+# and foliage alike — none of which are naturally this colour.
+_MASK_TINT = (255, 0, 128)
 
 
 @register
@@ -64,8 +69,17 @@ class AddSegments(TiNode):
 			},
 		}
 
-	RETURN_TYPES = ("MASK", "IMAGE", "TI_SAM3_SEGMENTS")
-	RETURN_NAMES = ("mask", "image", "segments")
+	# bbox_mask is APPENDED, so a saved workflow keeps its existing link slots.
+	RETURN_TYPES = ("MASK", "IMAGE", "TI_SAM3_SEGMENTS", "MASK")
+	RETURN_NAMES = ("mask", "image", "segments", "bbox_mask")
+	OUTPUT_TOOLTIPS = (
+		"Union of the kept segments' actual shapes.",
+		"The frames with those segments colorized.",
+		"The kept segments, chainable into another segment editor.",
+		"Filled RECTANGLES over each segment's bbox instead of its outline — "
+		"gives an inpainting model clean margin on every side, at the cost of "
+		"regenerating everything else inside the box.",
+	)
 	FUNCTION = "execute"
 
 	@staticmethod
@@ -156,7 +170,7 @@ class AddSegments(TiNode):
 			"frames": out_frames,
 			"ids": sorted(set(segments.get("ids", [])) | manual_ids),
 		}
-		result = (mask_out, image_out, out_segments)
+		result = (mask_out, image_out, out_segments, bbox_mask(out_segments, H, W))
 
 		manifest = self._build_assets(imgs, segments, sig)
 		if manifest is None:
@@ -167,9 +181,14 @@ class AddSegments(TiNode):
 	def _build_assets(self, imgs, segments, sig):
 		"""Save per-frame source previews and return the editor manifest.
 
-		Only the source frames + existing boxes are needed here (no label maps —
-		Add Segments never picks existing segments by pixel). Returns None on any
-		failure so the outputs still flow.
+		Ships, per frame: the source preview, the existing boxes, and a MASK
+		OVERLAY — an RGBA PNG whose alpha is the union of that frame's segment
+		masks, pre-tinted. Boxes alone made the current mask effectively
+		invisible (you cannot judge a mask from its bounding rectangle), and
+		shipping it as RGBA means the editor just draws it, with no per-pixel
+		work in JS. No label maps: Add Segments never picks a segment by pixel.
+
+		Returns None on any failure so the outputs still flow.
 		"""
 		try:
 			import numpy as np  # noqa: PLC0415
@@ -201,8 +220,27 @@ class AddSegments(TiNode):
 					Image.fromarray(arr[..., :3]).resize((pw, ph), Image.BILINEAR).save(
 						src_path, compress_level=1)
 
+				# Mask overlay: union of this frame's segment masks, tinted, with
+				# the mask itself as the alpha channel.
+				msk_name = f"msk_{f:05d}.png"
+				msk_path = os.path.join(root, msk_name)
+				if not os.path.exists(msk_path):
+					acc = np.zeros((H, W), dtype=np.uint8)
+					for s_ in frame:
+						x0, y0, x1, y1 = s_["bbox"]
+						m = (s_["mask"].cpu().numpy() > 0).astype(np.uint8)
+						np.maximum(acc[y0:y1, x0:x1], m, out=acc[y0:y1, x0:x1])
+					rgba = np.zeros((H, W, 4), dtype=np.uint8)
+					rgba[..., 0] = _MASK_TINT[0]
+					rgba[..., 1] = _MASK_TINT[1]
+					rgba[..., 2] = _MASK_TINT[2]
+					rgba[..., 3] = acc * 255
+					Image.fromarray(rgba, mode="RGBA").resize(
+						(pw, ph), Image.NEAREST).save(msk_path, compress_level=1)
+
 				manifest_frames.append({
 					"src": {"filename": src_name, "subfolder": subfolder, "type": "temp"},
+					"mask": {"filename": msk_name, "subfolder": subfolder, "type": "temp"},
 					"segs": [{
 						"id": s["id"],
 						"bbox": [round(s["bbox"][0] * scale), round(s["bbox"][1] * scale),

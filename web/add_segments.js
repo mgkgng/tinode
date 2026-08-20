@@ -83,7 +83,12 @@ function loadFrame(node, f) {
 	let fr = tas.frames[f];
 	if (!fr) {
 		const meta = tas.manifest.frames[f];
-		fr = tas.frames[f] = { meta, src: null };
+		fr = tas.frames[f] = { meta, src: null, mask: null };
+		if (meta.mask) {
+			const mimg = new Image();
+			mimg.onload = () => { fr.mask = mimg; if (tas.frameIdx === f) draw(node); };
+			mimg.src = urlFor(meta.mask);
+		}
 		const img = new Image();
 		img.onload = () => { fr.src = img; if (tas.frameIdx === f) draw(node); };
 		img.onerror = () => console.error("[tinode] Add Segments: src load failed", f);
@@ -118,13 +123,27 @@ function draw(node) {
 	if (fr && fr.src) ctx.drawImage(fr.src, v.ox, v.oy, tas.natW * v.scale, tas.natH * v.scale);
 	if (!fr || !fr.meta) return;
 
-	// Existing segments: dim reference boxes (preview-px bbox).
-	ctx.lineWidth = 1;
-	ctx.setLineDash([3, 3]);
+	// The CURRENT MASK, filled. A bounding rectangle tells you nothing about the
+	// actual mask shape, so the real thing is drawn — tinted, at a controllable
+	// opacity, with a bright edge so the boundary is unmistakable.
+	if (fr.mask && tas.maskAlpha > 0) {
+		ctx.save();
+		ctx.globalAlpha = tas.maskAlpha;
+		ctx.drawImage(fr.mask, v.ox, v.oy, tas.natW * v.scale, tas.natH * v.scale);
+		// Draw it again to harden the edge: overlapping copies build up alpha
+		// fastest where the mask is solid, so the boundary pops.
+		ctx.globalAlpha = Math.min(1, tas.maskAlpha * 0.6);
+		ctx.drawImage(fr.mask, v.ox, v.oy, tas.natW * v.scale, tas.natH * v.scale);
+		ctx.restore();
+	}
+
+	// Existing segments: reference boxes, solid enough to actually see.
+	ctx.lineWidth = 2;
+	ctx.setLineDash([6, 4]);
 	for (const s of fr.meta.segs) {
 		const [x0, y0, x1, y1] = s.bbox;
 		const [r, g, b] = colorForId(s.id);
-		ctx.strokeStyle = `rgba(${r},${g},${b},0.35)`;
+		ctx.strokeStyle = `rgba(${r},${g},${b},0.95)`;
 		ctx.strokeRect(v.ox + x0 * v.scale, v.oy + y0 * v.scale,
 			(x1 - x0) * v.scale, (y1 - y0) * v.scale);
 	}
@@ -214,14 +233,24 @@ function setup(node) {
 	slider.style.cssText = "flex:1;min-width:0;";
 	const counter = document.createElement("span");
 	counter.style.cssText = "font:11px monospace;color:#cfd3da;white-space:nowrap;";
-	bar.append(prev, slider, next, counter);
+	// Mask visibility: strong by default, and adjustable — you need it bold to
+	// judge the mask, but faint to check the pixels underneath it.
+	const mlabel = document.createElement("span");
+	mlabel.textContent = "mask";
+	mlabel.style.cssText = "font:11px monospace;color:#ff4fa3;white-space:nowrap;";
+	const mask = document.createElement("input");
+	mask.type = "range"; mask.min = "0"; mask.max = "100"; mask.value = "70";
+	mask.title = "Mask overlay opacity (press M to toggle)";
+	mask.style.cssText = "width:70px;flex:0 0 auto;accent-color:#ff0080;";
+	bar.append(prev, slider, next, counter, mlabel, mask);
 
 	const canvas = document.createElement("canvas");
 	canvas.style.cssText = "flex:1;min-height:0;width:100%;border-radius:4px;touch-action:none;display:block;cursor:crosshair;";
 	wrap.append(bar, canvas);
 
 	node._tas = {
-		wrap, bar, canvas, slider, counter, prev, next,
+		wrap, bar, canvas, slider, counter, prev, next, mask,
+		maskAlpha: (node.properties?.ti_mask_alpha ?? 70) / 100,
 		manifest: null, frames: [], frameIdx: 0,
 		natW: 512, natH: 512, fullW: 512, fullH: 512,
 		view: { ox: 0, oy: 0, scale: 1 }, creating: null,
@@ -242,11 +271,26 @@ function setup(node) {
 	prev.onclick = (e) => { e.stopPropagation(); loadFrame(node, node._tas.frameIdx - 1); };
 	next.onclick = (e) => { e.stopPropagation(); loadFrame(node, node._tas.frameIdx + 1); };
 	slider.addEventListener("input", (e) => { e.stopPropagation(); loadFrame(node, parseInt(slider.value, 10)); });
+	mask.value = String(Math.round(node._tas.maskAlpha * 100));
+	mask.addEventListener("input", (e) => {
+		e.stopPropagation();
+		const v = parseInt(mask.value, 10);
+		node._tas.maskAlpha = v / 100;
+		node.properties = node.properties || {};
+		node.properties.ti_mask_alpha = v;      // UI state, never a backend input
+		draw(node);
+	});
 	for (const el of [prev, next, slider]) el.addEventListener("pointerdown", (e) => e.stopPropagation());
 
 	wrap.tabIndex = 0;
 	wrap.addEventListener("pointerenter", () => wrap.focus({ preventScroll: true }));
 	wrap.addEventListener("keydown", (e) => {
+		if (e.key === "m" || e.key === "M") {
+			const t = node._tas;
+			t.maskAlpha = t.maskAlpha > 0 ? 0 : ((node.properties?.ti_mask_alpha ?? 70) / 100 || 0.7);
+			t.mask.value = String(Math.round(t.maskAlpha * 100));
+			draw(node); e.stopPropagation(); e.preventDefault(); return;
+		}
 		if (e.key === "ArrowLeft") { loadFrame(node, node._tas.frameIdx - 1); e.stopPropagation(); e.preventDefault(); }
 		else if (e.key === "ArrowRight") { loadFrame(node, node._tas.frameIdx + 1); e.stopPropagation(); e.preventDefault(); }
 	});

@@ -30,6 +30,7 @@ import torch
 from ...base import TiNode
 from ...registry import register
 from ...schema import validate_segments
+from .segments_to_masks import bbox_mask
 
 _PREVIEW_MAX_SIDE = 768
 # How many distinct inputs keep their editor assets on disk before the oldest
@@ -142,8 +143,17 @@ class PickSegments(TiNode):
 			},
 		}
 
-	RETURN_TYPES = ("MASK", "IMAGE", "TI_SAM3_SEGMENTS")
-	RETURN_NAMES = ("mask", "image", "segments")
+	# bbox_mask is APPENDED, so a saved workflow keeps its existing link slots.
+	RETURN_TYPES = ("MASK", "IMAGE", "TI_SAM3_SEGMENTS", "MASK")
+	RETURN_NAMES = ("mask", "image", "segments", "bbox_mask")
+	OUTPUT_TOOLTIPS = (
+		"Union of the kept segments' actual shapes.",
+		"The frames with those segments colorized.",
+		"The kept segments, chainable into another segment editor.",
+		"Filled RECTANGLES over each segment's bbox instead of its outline — "
+		"gives an inpainting model clean margin on every side, at the cost of "
+		"regenerating everything else inside the box.",
+	)
 	FUNCTION = "execute"
 
 	@staticmethod
@@ -215,7 +225,7 @@ class PickSegments(TiNode):
 			"frames": [included(frames[f] if f < len(frames) else []) for f in range(N)],
 			"ids": [i for i in segments.get("ids", []) if i not in excluded],
 		}
-		result = (mask_out, image_out, filtered)
+		result = (mask_out, image_out, filtered, bbox_mask(filtered, H, W))
 
 		manifest = self._build_assets(imgs, segments, sig)
 		if manifest is None:

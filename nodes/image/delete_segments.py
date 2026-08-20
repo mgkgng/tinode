@@ -9,6 +9,7 @@ import torch
 from ...base import TiNode
 from ...registry import register
 from ...schema import validate_segments
+from .segments_to_masks import bbox_mask
 from .pick_segments import (
 	PickSegments, _img_signature, _seg_signature, color_for_id,
 )
@@ -68,8 +69,17 @@ class DeleteSegments(TiNode):
 			},
 		}
 
-	RETURN_TYPES = ("MASK", "IMAGE", "TI_SAM3_SEGMENTS")
-	RETURN_NAMES = ("mask", "image", "segments")
+	# bbox_mask is APPENDED, so a saved workflow keeps its existing link slots.
+	RETURN_TYPES = ("MASK", "IMAGE", "TI_SAM3_SEGMENTS", "MASK")
+	RETURN_NAMES = ("mask", "image", "segments", "bbox_mask")
+	OUTPUT_TOOLTIPS = (
+		"Union of the kept segments' actual shapes.",
+		"The frames with those segments colorized.",
+		"The kept segments, chainable into another segment editor.",
+		"Filled RECTANGLES over each segment's bbox instead of its outline — "
+		"gives an inpainting model clean margin on every side, at the cost of "
+		"regenerating everything else inside the box.",
+	)
 	FUNCTION = "execute"
 
 	def execute(self, image, segments, deleted_items="{}", current_frame=0,
@@ -128,7 +138,7 @@ class DeleteSegments(TiNode):
 			"num_frames": N, "height": H, "width": W,
 			"frames": kept_frames, "ids": remaining_ids,
 		}
-		result = (mask_out, image_out, filtered)
+		result = (mask_out, image_out, filtered, bbox_mask(filtered, H, W))
 		manifest = PickSegments._build_assets(self, imgs, segments, sig)
 		if manifest is None:
 			return result
