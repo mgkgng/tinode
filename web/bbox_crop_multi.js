@@ -13,9 +13,11 @@
 
 import { app } from "../../scripts/app.js";
 import {
-	clamp, colorForId, fillNodeWidth, getWidget, hideWidget, pointerPos,
-	releaseGraphPointer, urlFor,
+	clamp, colorForId, constrainToRatio, fillNodeWidth, getWidget, hideWidget,
+	parseRatio, pointerPos, releaseGraphPointer, urlFor,
 } from "./lib/editor.js";
+
+const ratioOf = (node) => parseRatio(getWidget(node, "aspect_ratio")?.value);
 
 const NODE_TYPE = "TI_BboxCropMulti";
 const HANDLE_HIT = 12;
@@ -99,7 +101,9 @@ function applyDrag(node, sx, sy) {
 	if (d.grip.includes("e")) right = Math.max(sx, left + MIN_BOX);
 	if (d.grip.includes("n")) top = Math.min(sy, bottom - MIN_BOX);
 	if (d.grip.includes("s")) bottom = Math.max(sy, top + MIN_BOX);
-	b.x = left; b.y = top; b.w = right - left; b.h = bottom - top;
+	const box = constrainToRatio(
+		{ x: left, y: top, w: right - left, h: bottom - top }, d.grip, ratioOf(node));
+	b.x = box.x; b.y = box.y; b.w = box.w; b.h = box.h;
 }
 
 function draw(node) {
@@ -273,6 +277,13 @@ function setupEditor(node) {
 			const c = node._ti.creating;
 			c.w = Math.abs(sx - c._sx); c.h = Math.abs(sy - c._sy);
 			c.x = Math.min(sx, c._sx); c.y = Math.min(sy, c._sy);
+			const r = ratioOf(node);
+			if (r) {                       // grow from the start corner, ratio-locked
+				const nw = Math.max(c.w, c.h * r);
+				c.w = nw; c.h = nw / r;
+				c.x = (sx < c._sx) ? c._sx - c.w : c._sx;
+				c.y = (sy < c._sy) ? c._sy - c.h : c._sy;
+			}
 			draw(node); e.preventDefault(); e.stopPropagation(); return;
 		}
 		if (node._ti.drag) {

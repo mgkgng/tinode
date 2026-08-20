@@ -15,7 +15,8 @@
 
 import { app } from "../../scripts/app.js";
 import {
-	clamp, fillNodeWidth, getWidget, pointerPos, releaseGraphPointer, urlFor,
+	clamp, constrainToRatio, fillNodeWidth, getWidget, parseRatio, pointerPos,
+	releaseGraphPointer, urlFor,
 } from "./lib/editor.js";
 
 const NODE_TYPE = "TI_BboxCropManual";
@@ -131,7 +132,9 @@ function applyDrag(node, grip, sx, sy) {
 	if (grip.includes("e")) right = Math.max(sx, left + MIN_BOX);
 	if (grip.includes("n")) top = Math.min(sy, bottom - MIN_BOX);
 	if (grip.includes("s")) bottom = Math.max(sy, top + MIN_BOX);
-	writeBox(node, { x: left, y: top, w: right - left, h: bottom - top });
+	let box = { x: left, y: top, w: right - left, h: bottom - top };
+	box = constrainToRatio(box, grip, parseRatio(getWidget(node, "aspect_ratio")?.value));
+	writeBox(node, box);
 }
 
 function draw(node) {

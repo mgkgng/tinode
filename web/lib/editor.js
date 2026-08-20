@@ -27,6 +27,48 @@ export function colorForId(id) {
 
 export function clamp(v, lo, hi) { return Math.max(lo, Math.min(v, hi)); }
 
+/** Parse an aspect ratio string ("16:9", "1.777", "4:3") to W/H, or null. */
+export function parseRatio(s) {
+	if (s == null) return null;
+	s = String(s).trim();
+	if (!s) return null;
+	let r;
+	if (s.includes(":")) {
+		const [a, b] = s.split(":").map(Number);
+		if (!a || !b) return null;
+		r = a / b;
+	} else {
+		r = Number(s);
+	}
+	return (isFinite(r) && r > 0) ? r : null;
+}
+
+/** Reshape a just-resized box to width/height == ratio, keeping the grip's
+ *  anchored edge(s) fixed. `grip` is one of nw/ne/sw/se (corner) or n/s/e/w
+ *  (edge); "move" and a null ratio pass through unchanged. Frame clamping is
+ *  left to the caller. */
+export function constrainToRatio(box, grip, ratio) {
+	if (!ratio || !grip || grip === "move") return box;
+	const { x, y, w, h } = box;
+	// corner: size to cover the drag, anchored at the opposite corner
+	const nw = Math.max(w, h * ratio), nh = nw / ratio;
+	switch (grip) {
+		case "se": return { x, y, w: nw, h: nh };
+		case "nw": return { x: x + w - nw, y: y + h - nh, w: nw, h: nh };
+		case "ne": return { x, y: y + h - nh, w: nw, h: nh };
+		case "sw": return { x: x + w - nw, y, w: nw, h: nh };
+		case "e": case "w": {         // width fixed by the drag; height from it, centred
+			const nh2 = w / ratio;
+			return { x, y: y + h / 2 - nh2 / 2, w, h: nh2 };
+		}
+		case "n": case "s": {         // height fixed by the drag; width from it, centred
+			const nw2 = h * ratio;
+			return { x: x + w / 2 - nw2 / 2, y, w: nw2, h };
+		}
+		default: return box;
+	}
+}
+
 export function getWidget(node, name) {
 	return node.widgets?.find((w) => w.name === name);
 }

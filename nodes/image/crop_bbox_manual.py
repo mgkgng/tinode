@@ -124,6 +124,9 @@ class BboxCropManual(TiNode):
 				"divisible_by": ("INT", {"default": 1, "min": 0, "max": 256, "step": 1,
 					"tooltip": "Round the crop size down to a multiple of this "
 							   "(8 for most latent models). 0 or 1 = off."}),
+				"aspect_ratio": ("STRING", {"default": "", "tooltip":
+					"Lock the box to this aspect ratio while dragging its handles "
+					"(e.g. 16:9, 4:3, 1.5). Empty = free. Moving is always free."}),
 			},
 		}
 
@@ -131,7 +134,7 @@ class BboxCropManual(TiNode):
 	RETURN_NAMES = ("images", "crop_info")
 	FUNCTION = "execute"
 
-	def execute(self, image, x, y, width, height, divisible_by=1):
+	def execute(self, image, x, y, width, height, divisible_by=1, aspect_ratio=""):
 		imgs = image if image.dim() == 4 else image.unsqueeze(0)  # [N,H,W,C]
 		N, H, W, C = imgs.shape
 
@@ -264,6 +267,9 @@ class BboxCropMulti(TiNode):
 				"divisible_by": ("INT", {"default": 1, "min": 0, "max": 256, "step": 1,
 					"tooltip": "Round each crop size down to a multiple (8 for most "
 							   "latent models). 0 or 1 = off."}),
+				"aspect_ratio": ("STRING", {"default": "", "tooltip":
+					"Lock every box to this aspect ratio while dragging its handles "
+					"(e.g. 16:9, 4:3, 1.5). Empty = free. Moving is always free."}),
 			},
 		}
 
