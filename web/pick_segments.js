@@ -175,8 +175,8 @@ function draw(node) {
 	if (!tps.manifest) {
 		ctx.fillStyle = "#888"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
 		ctx.fillText(tps.deleteMode
-			? "Run once, then click a segment to delete it from this frame."
-			: "Run once to load the segments, then click objects to toggle.",
+			? "Run once, then click a segment to delete it (shift-drag to sweep)."
+			: "Run once to load the segments, then click to toggle (shift-drag to erase).",
 			cv.width / 2, cv.height / 2);
 		return;
 	}
@@ -284,7 +284,7 @@ function setup(node, deleteMode = false) {
 		wrap, bar, canvas, slider, counter, prev, next,
 		manifest: null, frames: [], frameIdx: 0,
 		natW: 512, natH: 512, view: { ox: 0, oy: 0, scale: 1 }, hoverIdx: null,
-		deleteMode,
+		deleteMode, erasing: false,
 	};
 
 	node.addDOMWidget("segment_picker", "ti_pick_editor", wrap, {
@@ -342,9 +342,32 @@ function setup(node, deleteMode = false) {
 		return v > 0 ? v - 1 : boxAt(node2, cx, cy);
 	};
 
+	// Shift-drag = eraser: every segment the cursor touches is EXCLUDED (never
+	// re-included), so one sweep can clear a crowd of overlapping detections
+	// without 30 individual clicks. `key` matches the click path, so it honours
+	// delete-mode (per-frame) vs normal (per-id) exactly the same way.
+	const eraseAt = (cx, cy) => {
+		const idx = segIdxAt(node, cx, cy);
+		if (idx < 0) return false;
+		const fr = node._tps.frames[node._tps.frameIdx];
+		const key = node._tps.deleteMode ? `${node._tps.frameIdx}:${idx}` : fr.meta.segs[idx].id;
+		const excluded = readSelection(node);
+		if (excluded.has(key)) return false;          // already off — nothing to do
+		excluded.add(key);
+		writeSelection(node, excluded);
+		updateCounter(node);
+		return true;
+	};
+
 	canvas.addEventListener("pointermove", (e) => {
 		if (!node._tps.manifest) return;
 		const [cx, cy] = pos(e);
+		if (node._tps.erasing) {
+			if (eraseAt(cx, cy)) draw(node);
+			e.stopPropagation();
+			e.preventDefault();
+			return;
+		}
 		const idx = segIdxAt(node, cx, cy);
 		if (idx !== node._tps.hoverIdx) {
 			node._tps.hoverIdx = idx;
@@ -359,6 +382,17 @@ function setup(node, deleteMode = false) {
 		if (!node._tps.manifest || e.button !== 0) return;
 		releaseGraphPointer(e);
 		const [cx, cy] = pos(e);
+		if (e.shiftKey) {                      // start an eraser stroke
+			node._tps.erasing = true;
+			node._tps.hoverIdx = null;
+			canvas.style.cursor = "cell";
+			canvas.setPointerCapture?.(e.pointerId);
+			eraseAt(cx, cy);                   // erase the one under the press too
+			draw(node);
+			e.stopPropagation();
+			e.preventDefault();
+			return;
+		}
 		const idx = segIdxAt(node, cx, cy);
 		if (idx < 0) return;
 		const fr = node._tps.frames[node._tps.frameIdx];
@@ -373,6 +407,15 @@ function setup(node, deleteMode = false) {
 		e.stopPropagation();
 		e.preventDefault();
 	});
+	const endErase = (e) => {
+		if (!node._tps.erasing) return;
+		node._tps.erasing = false;
+		canvas.style.cursor = "default";
+		canvas.releasePointerCapture?.(e.pointerId);
+		draw(node);
+	};
+	canvas.addEventListener("pointerup", endErase);
+	canvas.addEventListener("pointercancel", endErase);
 	canvas.addEventListener("contextmenu", (e) => e.stopPropagation());
 
 	requestAnimationFrame(() => draw(node));
