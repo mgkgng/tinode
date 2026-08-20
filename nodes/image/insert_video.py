@@ -23,7 +23,7 @@ import torch
 
 from ...base import TiNode
 from ...registry import register
-from .extend_video import _as_batch, _match
+from ._video_util import _as_batch, _match
 
 _MODES = ["replace", "insert"]
 

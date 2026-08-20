@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from ...base import TiNode
 from ...registry import register
-from .extend_video import _as_batch
+from ._video_util import _as_batch
 
 
 @register
