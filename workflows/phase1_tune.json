@@ -1,0 +1,2153 @@
+{
+  "id": "phase1_tune.json",
+  "revision": 0,
+  "last_node_id": 27,
+  "last_link_id": 37,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "TI_LoadVideos",
+      "pos": [
+        -80,
+        0
+      ],
+      "size": [
+        300,
+        110
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "directory",
+          "type": "STRING",
+          "widget": {
+            "name": "directory"
+          },
+          "link": null
+        },
+        {
+          "name": "pattern",
+          "type": "STRING",
+          "widget": {
+            "name": "pattern"
+          },
+          "link": null
+        },
+        {
+          "name": "filenames",
+          "type": "STRING",
+          "widget": {
+            "name": "filenames"
+          },
+          "link": null
+        },
+        {
+          "name": "reverse",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "reverse"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "videos",
+          "type": "VIDEO",
+          "links": []
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_LoadVideos"
+      },
+      "widgets_values": [
+        "AMIR/BATCH_001",
+        "*",
+        "",
+        false
+      ],
+      "title": "Load Videos (ti)",
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 2,
+      "type": "TI_ItemCursor",
+      "pos": [
+        300,
+        0
+      ],
+      "size": [
+        250,
+        170
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "link": 1
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "widget": {
+            "name": "index"
+          },
+          "link": null
+        },
+        {
+          "name": "wrap",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "wrap"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item",
+          "type": "*",
+          "links": [
+            2,
+            3
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "is_last",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ItemCursor"
+      },
+      "widgets_values": [
+        0,
+        false
+      ],
+      "title": "① Item Cursor · CLIP  ◀ ▶",
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 3,
+      "type": "GetVideoComponents",
+      "pos": [
+        620,
+        -40
+      ],
+      "size": [
+        193.530859375,
+        86
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": []
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "bit_depth",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GetVideoComponents"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 4,
+      "type": "TI_VideoSourcePath",
+      "pos": [
+        620,
+        150
+      ],
+      "size": [
+        220,
+        90
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "stem",
+          "type": "STRING",
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "filename",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "path",
+          "type": "STRING",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_VideoSourcePath"
+      },
+      "widgets_values": [],
+      "title": "Video Source Path (ti)",
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 5,
+      "type": "SetNode",
+      "pos": [
+        880,
+        120
+      ],
+      "size": [
+        200,
+        58
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": []
+        }
+      ],
+      "title": "Set_stem",
+      "properties": {
+        "previousName": "stem",
+        "Node name for S&R": "SetNode",
+        "aux_id": "kijai/ComfyUI-KJNodes"
+      },
+      "widgets_values": [
+        "stem"
+      ],
+      "color": "#233",
+      "bgcolor": "#355"
+    },
+    {
+      "id": 6,
+      "type": "SetNode",
+      "pos": [
+        880,
+        200
+      ],
+      "size": [
+        200,
+        58
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": []
+        }
+      ],
+      "title": "Set_path",
+      "properties": {
+        "previousName": "path",
+        "Node name for S&R": "SetNode",
+        "aux_id": "kijai/ComfyUI-KJNodes"
+      },
+      "widgets_values": [
+        "path"
+      ],
+      "color": "#233",
+      "bgcolor": "#355"
+    },
+    {
+      "id": 7,
+      "type": "SetNode",
+      "pos": [
+        880,
+        280
+      ],
+      "size": [
+        200,
+        58
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": []
+        }
+      ],
+      "title": "Set_fps",
+      "properties": {
+        "previousName": "fps",
+        "Node name for S&R": "SetNode",
+        "aux_id": "kijai/ComfyUI-KJNodes"
+      },
+      "widgets_values": [
+        "fps"
+      ],
+      "color": "#233",
+      "bgcolor": "#355"
+    },
+    {
+      "id": 8,
+      "type": "TI_SplitVideoChunks",
+      "pos": [
+        -80,
+        470
+      ],
+      "size": [
+        360,
+        470
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 7
+        },
+        {
+          "name": "cuts",
+          "type": "STRING",
+          "widget": {
+            "name": "cuts"
+          },
+          "link": null
+        },
+        {
+          "name": "max_length",
+          "type": "INT",
+          "widget": {
+            "name": "max_length"
+          },
+          "link": null
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "links": [
+            8
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_SplitVideoChunks"
+      },
+      "widgets_values": [
+        "",
+        189
+      ],
+      "title": "Split Video · Chunks — scrub & cut (189 fits VOID)",
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 9,
+      "type": "TI_ItemCursor",
+      "pos": [
+        340,
+        470
+      ],
+      "size": [
+        250,
+        170
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "link": 8
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "widget": {
+            "name": "index"
+          },
+          "link": null
+        },
+        {
+          "name": "wrap",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "wrap"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item",
+          "type": "*",
+          "links": [
+            9
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "is_last",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ItemCursor"
+      },
+      "widgets_values": [
+        0,
+        false
+      ],
+      "title": "② Item Cursor · CHUNK  ◀ ▶",
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 10,
+      "type": "TI_ChunkItem",
+      "pos": [
+        640,
+        470
+      ],
+      "size": [
+        240,
+        170
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item",
+          "type": "TI_CHUNK_ITEM",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        },
+        {
+          "name": "start",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "end",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "chunk_index",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "chunk_count",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ChunkItem"
+      },
+      "widgets_values": [],
+      "title": "Chunk Item (ti)",
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 11,
+      "type": "TI_BboxCropMulti",
+      "pos": [
+        -80,
+        1010
+      ],
+      "size": [
+        360,
+        470
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 10
+        },
+        {
+          "name": "boxes",
+          "type": "STRING",
+          "widget": {
+            "name": "boxes"
+          },
+          "link": null
+        },
+        {
+          "name": "divisible_by",
+          "type": "INT",
+          "widget": {
+            "name": "divisible_by"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "links": [
+            11
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_BboxCropMulti"
+      },
+      "widgets_values": [
+        "[]",
+        8
+      ],
+      "title": "Bbox Crop · Multi — scrub, draw N crops",
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 12,
+      "type": "TI_ItemCursor",
+      "pos": [
+        340,
+        1010
+      ],
+      "size": [
+        250,
+        170
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "link": 11
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "widget": {
+            "name": "index"
+          },
+          "link": null
+        },
+        {
+          "name": "wrap",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "wrap"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item",
+          "type": "*",
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "is_last",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ItemCursor"
+      },
+      "widgets_values": [
+        0,
+        false
+      ],
+      "title": "③ Item Cursor · CROP  ◀ ▶",
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 13,
+      "type": "TI_CropItem",
+      "pos": [
+        640,
+        1010
+      ],
+      "size": [
+        220,
+        120
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item",
+          "type": "TI_CROP_ITEM",
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "name": "crops",
+          "type": "IMAGE",
+          "links": [
+            21,
+            22,
+            26,
+            33
+          ]
+        },
+        {
+          "name": "crop_info",
+          "type": "TI_CROP_XFORM",
+          "links": [
+            31
+          ]
+        },
+        {
+          "name": "crop_index",
+          "type": "INT",
+          "links": [
+            14,
+            32
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_CropItem"
+      },
+      "widgets_values": [],
+      "title": "Crop Item (ti)",
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 14,
+      "type": "GetNode",
+      "pos": [
+        -80,
+        1300
+      ],
+      "size": [
+        180,
+        58
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "title": "Get_stem",
+      "properties": {
+        "Node name for S&R": "GetNode",
+        "aux_id": "kijai/ComfyUI-KJNodes"
+      },
+      "widgets_values": [
+        "stem"
+      ],
+      "color": "#233",
+      "bgcolor": "#355"
+    },
+    {
+      "id": 15,
+      "type": "TI_ItemParams",
+      "pos": [
+        140,
+        1300
+      ],
+      "size": [
+        320,
+        330
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "key",
+          "type": "STRING",
+          "widget": {
+            "name": "key"
+          },
+          "link": 13
+        },
+        {
+          "name": "entry",
+          "type": "STRING",
+          "widget": {
+            "name": "entry"
+          },
+          "link": null
+        },
+        {
+          "name": "defaults",
+          "type": "STRING",
+          "widget": {
+            "name": "defaults"
+          },
+          "link": null
+        },
+        {
+          "name": "table",
+          "type": "STRING",
+          "widget": {
+            "name": "table"
+          },
+          "link": null
+        },
+        {
+          "name": "entry_key",
+          "type": "STRING",
+          "widget": {
+            "name": "entry_key"
+          },
+          "link": null
+        },
+        {
+          "name": "sub",
+          "type": "STRING",
+          "widget": {
+            "name": "sub"
+          },
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "json",
+          "type": "STRING",
+          "links": [
+            15,
+            16,
+            17
+          ]
+        },
+        {
+          "name": "table",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "key",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ItemParams"
+      },
+      "widgets_values": [
+        "",
+        "",
+        "{\n  \"prompt\": \"people\",\n  \"threshold\": 0.45,\n  \"max_segments\": 0\n}",
+        "{}",
+        "",
+        ""
+      ],
+      "title": "Item Params — settings for THIS crop",
+      "color": "#333",
+      "bgcolor": "#444"
+    },
+    {
+      "id": 16,
+      "type": "TI_ParamGet",
+      "pos": [
+        500,
+        1300
+      ],
+      "size": [
+        230,
+        140
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "json",
+          "type": "STRING",
+          "widget": {
+            "name": "json"
+          },
+          "link": 15
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "widget": {
+            "name": "name"
+          },
+          "link": null
+        },
+        {
+          "name": "fallback",
+          "type": "STRING",
+          "widget": {
+            "name": "fallback"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "string",
+          "type": "STRING",
+          "links": [
+            18,
+            37
+          ]
+        },
+        {
+          "name": "float",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "name": "int",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "boolean",
+          "type": "BOOLEAN",
+          "links": []
+        },
+        {
+          "name": "found",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ParamGet"
+      },
+      "widgets_values": [
+        "{}",
+        "prompt",
+        "people"
+      ],
+      "title": "Param Get · prompt",
+      "color": "#333",
+      "bgcolor": "#444"
+    },
+    {
+      "id": 17,
+      "type": "TI_ParamGet",
+      "pos": [
+        500,
+        1480
+      ],
+      "size": [
+        230,
+        140
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "json",
+          "type": "STRING",
+          "widget": {
+            "name": "json"
+          },
+          "link": 16
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "widget": {
+            "name": "name"
+          },
+          "link": null
+        },
+        {
+          "name": "fallback",
+          "type": "STRING",
+          "widget": {
+            "name": "fallback"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "string",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "float",
+          "type": "FLOAT",
+          "links": [
+            19
+          ]
+        },
+        {
+          "name": "int",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "boolean",
+          "type": "BOOLEAN",
+          "links": []
+        },
+        {
+          "name": "found",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ParamGet"
+      },
+      "widgets_values": [
+        "{}",
+        "threshold",
+        "0.45"
+      ],
+      "title": "Param Get · threshold",
+      "color": "#333",
+      "bgcolor": "#444"
+    },
+    {
+      "id": 18,
+      "type": "TI_ParamGet",
+      "pos": [
+        500,
+        1660
+      ],
+      "size": [
+        230,
+        140
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "json",
+          "type": "STRING",
+          "widget": {
+            "name": "json"
+          },
+          "link": 17
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "widget": {
+            "name": "name"
+          },
+          "link": null
+        },
+        {
+          "name": "fallback",
+          "type": "STRING",
+          "widget": {
+            "name": "fallback"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "string",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "float",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "name": "int",
+          "type": "INT",
+          "links": [
+            20
+          ]
+        },
+        {
+          "name": "boolean",
+          "type": "BOOLEAN",
+          "links": []
+        },
+        {
+          "name": "found",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ParamGet"
+      },
+      "widgets_values": [
+        "{}",
+        "max_segments",
+        "0"
+      ],
+      "title": "Param Get · max_segments",
+      "color": "#333",
+      "bgcolor": "#444"
+    },
+    {
+      "id": 19,
+      "type": "EasySAM3Segment",
+      "pos": [
+        -80,
+        1900
+      ],
+      "size": [
+        270,
+        194
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 21
+        },
+        {
+          "name": "pos_points",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "neg_points",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 18
+        },
+        {
+          "name": "threshold",
+          "type": "FLOAT",
+          "widget": {
+            "name": "threshold"
+          },
+          "link": 19
+        },
+        {
+          "name": "max_segments",
+          "type": "INT",
+          "widget": {
+            "name": "max_segments"
+          },
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "segments",
+          "type": "TI_SAM3_SEGMENTS",
+          "links": [
+            23
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EasySAM3Segment",
+        "aux_id": "mgkgng/ComfyUI-EasySAM3",
+        "ver": "1ce1130dc9e3e579d2d77656fb378ae9f6f66782"
+      },
+      "widgets_values": [
+        "people",
+        0.45,
+        "0",
+        true,
+        0
+      ],
+      "title": "EasySAM3 Segment — driven by Item Params",
+      "color": "#325",
+      "bgcolor": "#547"
+    },
+    {
+      "id": 20,
+      "type": "TI_PickSegments",
+      "pos": [
+        260,
+        1900
+      ],
+      "size": [
+        380,
+        470
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 22
+        },
+        {
+          "name": "segments",
+          "type": "TI_SAM3_SEGMENTS",
+          "link": 23
+        },
+        {
+          "name": "excluded_ids",
+          "type": "STRING",
+          "widget": {
+            "name": "excluded_ids"
+          },
+          "link": null
+        },
+        {
+          "name": "current_frame",
+          "type": "INT",
+          "widget": {
+            "name": "current_frame"
+          },
+          "link": null
+        },
+        {
+          "name": "overlay_alpha",
+          "type": "FLOAT",
+          "widget": {
+            "name": "overlay_alpha"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            25
+          ]
+        },
+        {
+          "name": "segments",
+          "type": "TI_SAM3_SEGMENTS",
+          "links": [
+            24
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_PickSegments"
+      },
+      "widgets_values": [
+        "[]",
+        0,
+        0.5
+      ],
+      "title": "Pick Segments (ti)",
+      "color": "#325",
+      "bgcolor": "#547"
+    },
+    {
+      "id": 21,
+      "type": "TI_ValidationGate",
+      "pos": [
+        680,
+        1900
+      ],
+      "size": [
+        230,
+        120
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "link": 24
+        },
+        {
+          "name": "preview",
+          "type": "IMAGE",
+          "link": 25
+        },
+        {
+          "name": "title",
+          "type": "STRING",
+          "widget": {
+            "name": "title"
+          },
+          "link": null
+        },
+        {
+          "name": "timeout",
+          "type": "INT",
+          "widget": {
+            "name": "timeout"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            27
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ValidationGate"
+      },
+      "widgets_values": [
+        "Picked segments OK?",
+        0
+      ],
+      "title": "✋ Gate · pick",
+      "color": "#325",
+      "bgcolor": "#547"
+    },
+    {
+      "id": 22,
+      "type": "TI_AddSegments",
+      "pos": [
+        960,
+        1900
+      ],
+      "size": [
+        380,
+        470
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 26
+        },
+        {
+          "name": "segments",
+          "type": "TI_SAM3_SEGMENTS",
+          "link": 27
+        },
+        {
+          "name": "manual_segments",
+          "type": "STRING",
+          "widget": {
+            "name": "manual_segments"
+          },
+          "link": null
+        },
+        {
+          "name": "current_frame",
+          "type": "INT",
+          "widget": {
+            "name": "current_frame"
+          },
+          "link": null
+        },
+        {
+          "name": "overlay_alpha",
+          "type": "FLOAT",
+          "widget": {
+            "name": "overlay_alpha"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": [
+            28
+          ]
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            29
+          ]
+        },
+        {
+          "name": "segments",
+          "type": "TI_SAM3_SEGMENTS",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_AddSegments"
+      },
+      "widgets_values": [
+        "{}",
+        0,
+        0.5
+      ],
+      "title": "Add Segments (ti)",
+      "color": "#325",
+      "bgcolor": "#547"
+    },
+    {
+      "id": 23,
+      "type": "TI_ValidationGate",
+      "pos": [
+        1380,
+        1900
+      ],
+      "size": [
+        230,
+        120
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "link": 28
+        },
+        {
+          "name": "preview",
+          "type": "IMAGE",
+          "link": 29
+        },
+        {
+          "name": "title",
+          "type": "STRING",
+          "widget": {
+            "name": "title"
+          },
+          "link": null
+        },
+        {
+          "name": "timeout",
+          "type": "INT",
+          "widget": {
+            "name": "timeout"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            30
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ValidationGate"
+      },
+      "widgets_values": [
+        "Final mask OK? (saves on approve)",
+        0
+      ],
+      "title": "✋ Gate · mask",
+      "color": "#325",
+      "bgcolor": "#547"
+    },
+    {
+      "id": 24,
+      "type": "GetNode",
+      "pos": [
+        1380,
+        2490
+      ],
+      "size": [
+        180,
+        58
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": [
+            34
+          ]
+        }
+      ],
+      "title": "Get_stem",
+      "properties": {
+        "Node name for S&R": "GetNode",
+        "aux_id": "kijai/ComfyUI-KJNodes"
+      },
+      "widgets_values": [
+        "stem"
+      ],
+      "color": "#233",
+      "bgcolor": "#355"
+    },
+    {
+      "id": 25,
+      "type": "GetNode",
+      "pos": [
+        1380,
+        2560
+      ],
+      "size": [
+        180,
+        58
+      ],
+      "flags": {},
+      "order": 25,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": [
+            35
+          ]
+        }
+      ],
+      "title": "Get_path",
+      "properties": {
+        "Node name for S&R": "GetNode",
+        "aux_id": "kijai/ComfyUI-KJNodes"
+      },
+      "widgets_values": [
+        "path"
+      ],
+      "color": "#233",
+      "bgcolor": "#355"
+    },
+    {
+      "id": 26,
+      "type": "GetNode",
+      "pos": [
+        1380,
+        2630
+      ],
+      "size": [
+        180,
+        58
+      ],
+      "flags": {},
+      "order": 26,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": [
+            36
+          ]
+        }
+      ],
+      "title": "Get_fps",
+      "properties": {
+        "Node name for S&R": "GetNode",
+        "aux_id": "kijai/ComfyUI-KJNodes"
+      },
+      "widgets_values": [
+        "fps"
+      ],
+      "color": "#233",
+      "bgcolor": "#355"
+    },
+    {
+      "id": 27,
+      "type": "TI_SaveMasks",
+      "pos": [
+        1640,
+        2450
+      ],
+      "size": [
+        300,
+        330
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 30
+        },
+        {
+          "name": "crop_info",
+          "type": "TI_CROP_XFORM",
+          "link": 31
+        },
+        {
+          "name": "stem",
+          "type": "STRING",
+          "widget": {
+            "name": "stem"
+          },
+          "link": 34
+        },
+        {
+          "name": "crop_index",
+          "type": "INT",
+          "widget": {
+            "name": "crop_index"
+          },
+          "link": 32
+        },
+        {
+          "name": "crop_image",
+          "type": "IMAGE",
+          "link": 33
+        },
+        {
+          "name": "positive_prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "positive_prompt"
+          },
+          "link": 37
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "negative_prompt"
+          },
+          "link": null
+        },
+        {
+          "name": "source_path",
+          "type": "STRING",
+          "widget": {
+            "name": "source_path"
+          },
+          "link": 35
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "widget": {
+            "name": "fps"
+          },
+          "link": 36
+        },
+        {
+          "name": "subdir",
+          "type": "STRING",
+          "widget": {
+            "name": "subdir"
+          },
+          "link": null
+        },
+        {
+          "name": "crop_bit_depth",
+          "type": "COMBO",
+          "widget": {
+            "name": "crop_bit_depth"
+          },
+          "link": null
+        },
+        {
+          "name": "overwrite",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "overwrite"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "manifest_path",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_SaveMasks"
+      },
+      "widgets_values": [
+        "",
+        0,
+        "",
+        "",
+        "",
+        0.0,
+        "ti_masks",
+        "8",
+        true
+      ],
+      "title": "Save Crop & Mask (ti)",
+      "color": "#232",
+      "bgcolor": "#353"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "ITEM_LIST"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "*"
+    ],
+    [
+      3,
+      2,
+      0,
+      4,
+      0,
+      "*"
+    ],
+    [
+      4,
+      4,
+      0,
+      5,
+      0,
+      "STRING"
+    ],
+    [
+      5,
+      4,
+      2,
+      6,
+      0,
+      "STRING"
+    ],
+    [
+      6,
+      3,
+      2,
+      7,
+      0,
+      "FLOAT"
+    ],
+    [
+      7,
+      3,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      8,
+      8,
+      0,
+      9,
+      0,
+      "ITEM_LIST"
+    ],
+    [
+      9,
+      9,
+      0,
+      10,
+      0,
+      "*"
+    ],
+    [
+      10,
+      10,
+      0,
+      11,
+      0,
+      "IMAGE"
+    ],
+    [
+      11,
+      11,
+      0,
+      12,
+      0,
+      "ITEM_LIST"
+    ],
+    [
+      12,
+      12,
+      0,
+      13,
+      0,
+      "*"
+    ],
+    [
+      13,
+      14,
+      0,
+      15,
+      0,
+      "*"
+    ],
+    [
+      14,
+      13,
+      2,
+      15,
+      5,
+      "INT"
+    ],
+    [
+      15,
+      15,
+      0,
+      16,
+      0,
+      "STRING"
+    ],
+    [
+      16,
+      15,
+      0,
+      17,
+      0,
+      "STRING"
+    ],
+    [
+      17,
+      15,
+      0,
+      18,
+      0,
+      "STRING"
+    ],
+    [
+      18,
+      16,
+      0,
+      19,
+      3,
+      "STRING"
+    ],
+    [
+      19,
+      17,
+      1,
+      19,
+      4,
+      "FLOAT"
+    ],
+    [
+      20,
+      18,
+      2,
+      19,
+      5,
+      "INT"
+    ],
+    [
+      21,
+      13,
+      0,
+      19,
+      0,
+      "IMAGE"
+    ],
+    [
+      22,
+      13,
+      0,
+      20,
+      0,
+      "IMAGE"
+    ],
+    [
+      23,
+      19,
+      2,
+      20,
+      1,
+      "TI_SAM3_SEGMENTS"
+    ],
+    [
+      24,
+      20,
+      2,
+      21,
+      0,
+      "TI_SAM3_SEGMENTS"
+    ],
+    [
+      25,
+      20,
+      1,
+      21,
+      1,
+      "IMAGE"
+    ],
+    [
+      26,
+      13,
+      0,
+      22,
+      0,
+      "IMAGE"
+    ],
+    [
+      27,
+      21,
+      0,
+      22,
+      1,
+      "*"
+    ],
+    [
+      28,
+      22,
+      0,
+      23,
+      0,
+      "MASK"
+    ],
+    [
+      29,
+      22,
+      1,
+      23,
+      1,
+      "IMAGE"
+    ],
+    [
+      30,
+      23,
+      0,
+      27,
+      0,
+      "*"
+    ],
+    [
+      31,
+      13,
+      1,
+      27,
+      1,
+      "TI_CROP_XFORM"
+    ],
+    [
+      32,
+      13,
+      2,
+      27,
+      3,
+      "INT"
+    ],
+    [
+      33,
+      13,
+      0,
+      27,
+      4,
+      "IMAGE"
+    ],
+    [
+      34,
+      24,
+      0,
+      27,
+      2,
+      "*"
+    ],
+    [
+      35,
+      25,
+      0,
+      27,
+      7,
+      "*"
+    ],
+    [
+      36,
+      26,
+      0,
+      27,
+      8,
+      "*"
+    ],
+    [
+      37,
+      16,
+      0,
+      27,
+      5,
+      "STRING"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "1 · CLIP   (TUNE · step by hand with Item Cursor, retry freely)",
+      "bounding": [
+        -120,
+        -120,
+        1200,
+        430
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "2 · CHUNK  (split ≤189 for VOID)",
+      "bounding": [
+        -120,
+        390,
+        1100,
+        560
+      ],
+      "color": "#9e6b3f",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "3 · CROP",
+      "bounding": [
+        -120,
+        930,
+        1100,
+        340
+      ],
+      "color": "#3f9e6b",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "4 · PER-ITEM SETTINGS — tune here, they persist per crop",
+      "bounding": [
+        -120,
+        1250,
+        900,
+        580
+      ],
+      "color": "#555",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "5 · curate (each step pauses for approval)",
+      "bounding": [
+        -120,
+        1840,
+        1760,
+        560
+      ],
+      "color": "#7a3f9e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "6 · save",
+      "bounding": [
+        -120,
+        2390,
+        2900,
+        420
+      ],
+      "color": "#3f9e6b",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.42,
+      "offset": [
+        300,
+        250
+      ]
+    }
+  },
+  "version": 0.4
+}

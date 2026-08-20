@@ -1,0 +1,869 @@
+{
+  "id": "phase2b_composite.json",
+  "revision": 0,
+  "last_node_id": 9,
+  "last_link_id": 19,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "TI_LoadClips",
+      "pos": [
+        -60,
+        40
+      ],
+      "size": [
+        300,
+        150
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "subdir",
+          "type": "STRING",
+          "widget": {
+            "name": "subdir"
+          },
+          "link": null
+        },
+        {
+          "name": "source_dir",
+          "type": "STRING",
+          "widget": {
+            "name": "source_dir"
+          },
+          "link": null
+        },
+        {
+          "name": "stems",
+          "type": "STRING",
+          "widget": {
+            "name": "stems"
+          },
+          "link": null
+        },
+        {
+          "name": "require_filled",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "require_filled"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_LoadClips"
+      },
+      "widgets_values": [
+        "ti_masks",
+        "",
+        "",
+        true
+      ],
+      "title": "Load Clips (ti)",
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 2,
+      "type": "TI_ItemCursor",
+      "pos": [
+        300,
+        40
+      ],
+      "size": [
+        250,
+        170
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item_list",
+          "type": "ITEM_LIST",
+          "link": 1
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "widget": {
+            "name": "index"
+          },
+          "link": null
+        },
+        {
+          "name": "wrap",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "wrap"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "item",
+          "type": "*",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "is_last",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_ItemCursor"
+      },
+      "widgets_values": [
+        0,
+        false
+      ],
+      "title": "Item Cursor · CLIP  ◀ ▶",
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 3,
+      "type": "TI_LoadClipFills",
+      "pos": [
+        620,
+        20
+      ],
+      "size": [
+        250,
+        180
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "item",
+          "type": "TI_CLIP_ITEM",
+          "link": 3
+        },
+        {
+          "name": "variant",
+          "type": "STRING",
+          "widget": {
+            "name": "variant"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": [
+            4,
+            5
+          ]
+        },
+        {
+          "name": "filled_crops",
+          "type": "IMAGE",
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "crop_infos",
+          "type": "TI_CROP_XFORM",
+          "links": [
+            8
+          ]
+        },
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": [
+            9
+          ]
+        },
+        {
+          "name": "stem",
+          "type": "STRING",
+          "links": [
+            13
+          ]
+        },
+        {
+          "name": "crop_count",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "frame_starts",
+          "type": "INT",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_LoadClipFills"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "title": "Load Clip Fills (ti)",
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 4,
+      "type": "GetVideoComponents",
+      "pos": [
+        620,
+        260
+      ],
+      "size": [
+        210,
+        100
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            6
+          ]
+        },
+        {
+          "localized_name": "audio",
+          "name": "audio",
+          "type": "AUDIO",
+          "links": []
+        },
+        {
+          "localized_name": "fps",
+          "name": "fps",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "localized_name": "bit_depth",
+          "name": "bit_depth",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GetVideoComponents"
+      },
+      "widgets_values": [],
+      "title": "Get Video Components (original)",
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 5,
+      "type": "TI_CompositeCrops",
+      "pos": [
+        940,
+        20
+      ],
+      "size": [
+        260,
+        170
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 6
+        },
+        {
+          "name": "crops",
+          "type": "IMAGE",
+          "link": 7
+        },
+        {
+          "name": "crop_infos",
+          "type": "TI_CROP_XFORM",
+          "link": 8
+        },
+        {
+          "name": "masks",
+          "type": "MASK",
+          "link": 9
+        },
+        {
+          "name": "frame_starts",
+          "type": "INT",
+          "widget": {
+            "name": "frame_starts"
+          },
+          "link": 10
+        },
+        {
+          "name": "feather",
+          "type": "INT",
+          "widget": {
+            "name": "feather"
+          },
+          "link": null
+        },
+        {
+          "name": "feather_mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "feather_mode"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            11,
+            12
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_CompositeCrops"
+      },
+      "widgets_values": [
+        0,
+        3,
+        "gaussian"
+      ],
+      "title": "Composite Crops (ti)",
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 6,
+      "type": "TI_MatchSourceFormat",
+      "pos": [
+        940,
+        260
+      ],
+      "size": [
+        280,
+        210
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "quality",
+          "type": "COMBO",
+          "widget": {
+            "name": "quality"
+          },
+          "link": null
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 5
+        },
+        {
+          "name": "source_path",
+          "type": "STRING",
+          "widget": {
+            "name": "source_path"
+          },
+          "link": null
+        },
+        {
+          "name": "custom_crf",
+          "type": "INT",
+          "widget": {
+            "name": "custom_crf"
+          },
+          "link": null
+        },
+        {
+          "name": "force_png",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "force_png"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "format",
+          "type": "STRING",
+          "links": [
+            14
+          ]
+        },
+        {
+          "name": "crf",
+          "type": "INT",
+          "links": [
+            15
+          ]
+        },
+        {
+          "name": "pix_fmt",
+          "type": "STRING",
+          "links": [
+            16
+          ]
+        },
+        {
+          "name": "color_range",
+          "type": "STRING",
+          "links": [
+            17
+          ]
+        },
+        {
+          "name": "colorspace",
+          "type": "STRING",
+          "links": [
+            18
+          ]
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "links": [
+            19
+          ]
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_MatchSourceFormat"
+      },
+      "widgets_values": [
+        "lossless (crf 0)",
+        "",
+        0,
+        false
+      ],
+      "title": "Match Source Format (ti) — output = input",
+      "color": "#333",
+      "bgcolor": "#444"
+    },
+    {
+      "id": 7,
+      "type": "TI_SaveVideo",
+      "pos": [
+        1260,
+        20
+      ],
+      "size": [
+        280,
+        250
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 11
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          },
+          "link": 19
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": 13
+        },
+        {
+          "name": "format",
+          "type": "COMBO",
+          "widget": {
+            "name": "format"
+          },
+          "link": 14
+        },
+        {
+          "name": "crf",
+          "type": "INT",
+          "widget": {
+            "name": "crf"
+          },
+          "link": 15
+        },
+        {
+          "name": "pix_fmt",
+          "type": "COMBO",
+          "widget": {
+            "name": "pix_fmt"
+          },
+          "link": 16
+        },
+        {
+          "name": "color_range",
+          "type": "COMBO",
+          "widget": {
+            "name": "color_range"
+          },
+          "link": 17
+        },
+        {
+          "name": "colorspace",
+          "type": "COMBO",
+          "widget": {
+            "name": "colorspace"
+          },
+          "link": 18
+        },
+        {
+          "name": "save_output",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "save_output"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "filepath",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TI_SaveVideo"
+      },
+      "widgets_values": [
+        24.0,
+        "removed",
+        "h264 (mp4)",
+        17,
+        "yuv420p",
+        "tv",
+        "bt709",
+        true
+      ],
+      "title": "Save Video · Combine (ti)",
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 8,
+      "type": "PreviewImage",
+      "pos": [
+        1260,
+        320
+      ],
+      "size": [
+        280,
+        300
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 12
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "title": "Preview · composited master",
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 9,
+      "type": "PreviewAny",
+      "pos": [
+        -60,
+        240
+      ],
+      "size": [
+        300,
+        220
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [],
+      "title": "Store report",
+      "color": "#333",
+      "bgcolor": "#444"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "ITEM_LIST"
+    ],
+    [
+      2,
+      1,
+      2,
+      9,
+      0,
+      "STRING"
+    ],
+    [
+      3,
+      2,
+      0,
+      3,
+      0,
+      "*"
+    ],
+    [
+      4,
+      3,
+      0,
+      4,
+      0,
+      "VIDEO"
+    ],
+    [
+      5,
+      3,
+      0,
+      6,
+      1,
+      "VIDEO"
+    ],
+    [
+      6,
+      4,
+      0,
+      5,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      3,
+      1,
+      5,
+      1,
+      "IMAGE"
+    ],
+    [
+      8,
+      3,
+      2,
+      5,
+      2,
+      "TI_CROP_XFORM"
+    ],
+    [
+      9,
+      3,
+      3,
+      5,
+      3,
+      "MASK"
+    ],
+    [
+      10,
+      3,
+      6,
+      5,
+      4,
+      "INT"
+    ],
+    [
+      11,
+      5,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ],
+    [
+      12,
+      5,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      13,
+      3,
+      4,
+      7,
+      2,
+      "STRING"
+    ],
+    [
+      14,
+      6,
+      0,
+      7,
+      3,
+      "STRING"
+    ],
+    [
+      15,
+      6,
+      1,
+      7,
+      4,
+      "INT"
+    ],
+    [
+      16,
+      6,
+      2,
+      7,
+      5,
+      "STRING"
+    ],
+    [
+      17,
+      6,
+      3,
+      7,
+      6,
+      "STRING"
+    ],
+    [
+      18,
+      6,
+      4,
+      7,
+      7,
+      "STRING"
+    ],
+    [
+      19,
+      6,
+      5,
+      7,
+      1,
+      "FLOAT"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "PHASE 2b · composite every crop back and save the master",
+      "bounding": [
+        -100,
+        -60,
+        1680,
+        700
+      ],
+      "color": "#3f9e6b",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6,
+      "offset": [
+        250,
+        200
+      ]
+    }
+  },
+  "version": 0.4
+}
