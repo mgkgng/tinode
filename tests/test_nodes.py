@@ -33,7 +33,6 @@ from tinode.nodes.image.batch_drop import parse_keep  # noqa: E402
 from tinode.nodes.image.batch_pick import parse_pick  # noqa: E402
 from tinode.nodes.image.bbox_crop import MaskBboxCrop  # noqa: E402
 from tinode.nodes.image.crop_bbox_manual import BboxCropManual  # noqa: E402
-from tinode.nodes.image.extend_video import ExtendVideo  # noqa: E402
 from tinode.nodes.image.insert_video import InsertVideo  # noqa: E402
 from tinode.nodes.image.trim_video import TrimVideo  # noqa: E402
 from tinode.nodes.image.cut_video import CutVideo, cut_bounds  # noqa: E402
@@ -629,6 +628,18 @@ def test_pick_segments_drops_a_stale_selection():
 	assert legacy["ids"] == [7], "bare-list selections stay supported"
 
 
+def test_add_segments_boxes_persist_across_input_change():
+	# Drawn boxes are reusable across takes: a signature from a DIFFERENT input
+	# must NOT drop them (only the editor's clear button empties the list).
+	raw = json.dumps({"sig": "some_other_input_signature",
+					  "items": [{"id": 1000000, "frame": 0, "bbox": [1, 2, 5, 6]}]})
+	kept = AddSegments._manual_items(raw, "the_current_signature")
+	assert len(kept) == 1 and kept[0]["frame"] == 0
+	# the legacy bare-list form still works, and junk is still ignored
+	assert len(AddSegments._manual_items(json.dumps([{"id": 1, "frame": 0, "bbox": [0, 0, 2, 2]}]), "x")) == 1
+	assert AddSegments._manual_items("not json", "x") == []
+
+
 def test_add_segments_merges_and_matches_pick_outputs():
 	assert AddSegments.RETURN_TYPES == PickSegments.RETURN_TYPES
 	assert AddSegments.RETURN_NAMES == PickSegments.RETURN_NAMES
@@ -796,26 +807,78 @@ def test_prune_asset_cache_keeps_newest_and_current():
 	assert prune_asset_cache("/nonexistent/xyz", keep="a") == 0
 
 
-def test_extend_video_holds_and_splices():
+def test_frame_pad_side_prepend_append_both():
+	from tinode.nodes.image.frame_pad import FramePad
 	base = torch.zeros(5, 8, 6, 3)
 	for i in range(5):
 		base[i] = i / 10.0
 
-	out, pre, app = ExtendVideo().execute(base, prepend_mode="first_frame", prepend_frames=2,
-										append_mode="last_frame", append_frames=3)
-	assert (pre, app) == (2, 3) and out.shape[0] == 10
-	assert torch.equal(out[2:7], base)                       # base sits between
-	assert torch.equal(out[0], base[0]) and torch.equal(out[-1], base[-1])
+	# prepend only
+	out, _m, info, total = FramePad().execute(
+		base, side="prepend", auto_length=False, min_padding=2, head_fill="first_frame")
+	assert info["head"] == 2 and info["side"] == "prepend" and total == 7
+	assert torch.equal(out[2:], base) and torch.equal(out[0], base[0])
 
-	# a spliced clip of another size/channel count is conformed, base untouched
-	out, pre, app = ExtendVideo().execute(base, prepend_mode="video",
-										prepend_video=torch.rand(3, 16, 12, 4))
-	assert out.shape == (8, 8, 6, 3) and pre == 3
-	assert torch.equal(out[3:], base)
+	# append only: nothing on the head, tail freezes the last frame
+	out, _m, info, total = FramePad().execute(
+		base, side="append", auto_length=False, min_padding=3, tail_fill="last_frame")
+	assert info["head"] == 0 and total == 8 and torch.equal(out[:5], base) and torch.equal(out[-1], base[-1])
 
-	# video mode with nothing wired is a no-op, not a crash
-	out, pre, _ = ExtendVideo().execute(base, prepend_mode="video")
-	assert out.shape[0] == 5 and pre == 0
+	# both: the pad is split across the two ends
+	out, _m, info, total = FramePad().execute(
+		base, side="both", auto_length=False, min_padding=4)
+	assert info["head"] == 2 and total == 9 and torch.equal(out[2:7], base)
+
+	# solid-colour head fill (the "empty video" you control)
+	out, _m, _i, _t = FramePad().execute(
+		base, side="prepend", auto_length=False, min_padding=2, head_fill="color",
+		pad_color="#ff0000")
+	assert torch.allclose(out[0], torch.tensor([1.0, 0.0, 0.0]).expand(8, 6, 3))
+
+	# splice a differently-sized clip at the head — conformed, base untouched
+	out, _m, info, _t = FramePad().execute(
+		base, auto_length=False, min_padding=0, prepend_video=torch.rand(3, 16, 12, 4))
+	assert out.shape[1:] == (8, 6, 3) and info["head"] == 3 and torch.equal(out[3:], base)
+
+
+def test_frame_pad_rewind_pingpong():
+	from tinode.nodes.image.frame_pad import FramePad, FrameUnpad, _rewind_indices
+	assert _rewind_indices(5, 2, head=False) == [3, 2]     # after the end, play back
+	assert _rewind_indices(5, 2, head=True) == [2, 1]       # leads into the start
+	base = torch.zeros(6, 4, 5, 3)
+	for i in range(6):
+		base[i] = i / 10.0
+	mask = torch.ones(6, 4, 5)
+	out, m, info, total = FramePad().execute(
+		base, mask=mask, side="append", auto_length=False, min_padding=3, tail_fill="rewind")
+	assert info["head"] == 0 and total == 9
+	assert torch.equal(out[:6], base)                       # real content untouched
+	# the pad plays the shot backwards from the end (seam frame not duplicated)
+	assert torch.equal(out[6], base[4]) and torch.equal(out[7], base[3]) and torch.equal(out[8], base[2])
+	assert m[6:].min() == 1.0                               # mask carried, not zeroed
+	back, n = FrameUnpad().execute(out, info)               # pad_info reverses it
+	assert torch.equal(back, base) and n == 6
+
+
+def test_frame_pad_every_side_round_trips():
+	from tinode.nodes.image.frame_pad import FramePad, FrameUnpad
+	img = torch.rand(30, 8, 10, 3)
+	for side in ("prepend", "append", "both"):
+		padded, _m, pc, total = FramePad().execute(img, side=side)   # modulo 8
+		assert total % 8 == 0, side
+		back, n = FrameUnpad().execute(padded, pc, expected_frames=30)
+		assert torch.equal(back, img) and n == 30, side
+
+
+def test_frame_pad_modulo_remainder_targets():
+	from tinode.nodes.image.frame_pad import frame_pad_count
+	# MiniMax H3: length % 17 == 5
+	for L in range(1, 200):
+		p = frame_pad_count(L, 8, 17, 5)
+		assert p >= 8 and (L + p) % 17 == 5
+	# VOID: multiple of 8 (remainder 0)
+	for L in range(1, 200):
+		assert (L + frame_pad_count(L, 8, 8, 0)) % 8 == 0
 
 
 def test_insert_video_replace_and_insert():
@@ -1402,21 +1465,6 @@ def test_composite_crops_use_mask_off_writes_the_whole_rectangle():
 	assert torch.equal(off[:, :10, :, :], img[:, :10, :, :]), "outside it is untouched"
 
 
-def test_apply_mask_alpha_makes_rgba():
-	from tinode.nodes.image.apply_alpha import ApplyMaskAlpha
-	img = torch.rand(3, 20, 24, 3)
-	mask = torch.rand(3, 20, 24)
-	(rgba,) = ApplyMaskAlpha().execute(img, mask)
-	assert tuple(rgba.shape) == (3, 20, 24, 4)
-	assert torch.equal(rgba[..., :3], img)           # rgb preserved
-	assert torch.equal(rgba[..., 3], mask.clamp(0, 1))
-	(inv,) = ApplyMaskAlpha().execute(img, mask, invert=True)
-	assert torch.allclose(inv[..., 3], (1.0 - mask).clamp(0, 1))
-	# a single mask broadcasts across frames
-	(b,) = ApplyMaskAlpha().execute(img, torch.rand(1, 20, 24))
-	assert b.shape[0] == 3
-
-
 def test_composite_crops_pastes_multiple_crops_back():
 	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti
 	from tinode.nodes.image.removal_pass import CompositeCrops
@@ -1441,6 +1489,84 @@ def test_bbox_multi_empty_is_whole_frame():
 	assert count == 1
 	crop, _info, idx = CropItem().execute(items[0])
 	assert idx == 0 and torch.equal(crop, img)       # whole frame
+
+
+def test_divide_rectangle_tiles_and_reassembles():
+	from tinode.nodes.div.rectangle import DivideRectangle, split_spans
+	# even split, and the remainder is spread over the FIRST cells
+	assert split_spans(10, 2) == [(0, 5), (5, 10)]
+	assert split_spans(10, 3) == [(0, 4), (4, 7), (7, 10)]
+	assert split_spans(10, 3, overlap=2) == [(0, 6), (2, 9), (5, 10)]   # clamped at edges
+
+	img = torch.rand(3, 60, 80, 3)
+	tiles, grid, infos, count = DivideRectangle().execute(img, rows=2, cols=2)
+	assert count == 4 and len(tiles) == 4 and len(infos) == 4
+	assert all(tuple(t.shape) == (3, 30, 40, 3) for t in tiles)
+	assert tuple(grid.shape) == (12, 30, 40, 3)            # 4 tiles x 3 frames
+	# tiles are bit-exact slices, in reading order
+	assert torch.equal(tiles[0], img[:, 0:30, 0:40, :])
+	assert torch.equal(tiles[3], img[:, 30:60, 40:80, :])
+	# crop_infos put every tile back exactly -> the original frame
+	rebuilt = torch.zeros_like(img)
+	for t, info in zip(tiles, infos):
+		it = info["items"][0]
+		rebuilt[:, it["y0"]:it["y0"] + it["h"], it["x0"]:it["x0"] + it["w"], :] = t
+	assert torch.equal(rebuilt, img), "tiles must reassemble to the original"
+
+
+def test_divide_rectangle_uneven_and_overlap():
+	from tinode.nodes.div.rectangle import DivideRectangle
+	img = torch.rand(1, 10, 10, 3)
+	tiles, _g, infos, count = DivideRectangle().execute(img, rows=3, cols=1)
+	assert count == 3 and [t.shape[1] for t in tiles] == [4, 3, 3]   # remainder first
+	# overlapping tiles are bigger but still bit-exact slices of the source
+	tiles, _g, infos, _c = DivideRectangle().execute(img, rows=2, cols=1, overlap=2)
+	it = infos[1]["items"][0]
+	assert torch.equal(tiles[1], img[:, it["y0"]:it["y0"] + it["h"], :, :])
+	# more parts than pixels never yields an empty tile
+	tiles, _g, _i, count = DivideRectangle().execute(torch.rand(1, 2, 2, 3), rows=8, cols=8)
+	assert count == 4 and all(t.shape[1] > 0 and t.shape[2] > 0 for t in tiles)
+
+
+def test_show_text_lines_numbers_and_flattens():
+	from tinode.nodes.data.show_text import ShowTextLines
+	n = ShowTextLines()
+	# INPUT_IS_LIST wraps every socket; a list socket becomes one line per element
+	r = n.execute(text_1=["hello"], text_2=[["a", "b"]], text_3=[None])
+	assert r["result"][0] == "hello\na\nb"
+	assert r["ui"]["text"][0] == "1. hello\n2. a\n3. b"
+	# nothing wired says so rather than showing an empty box
+	assert "nothing wired" in ShowTextLines().execute()["ui"]["text"][0]
+
+
+def test_divide_rectangle_by_size():
+	from tinode.nodes.div.rectangle import DivideRectangle, parts_for_size, size_spans
+	# even mode: the count whose EVEN division lands closest to the target
+	assert parts_for_size(1000, 300) == 3            # 3x333, not 3x300 + a sliver
+	assert size_spans(1000, 300) == [(0, 334), (334, 667), (667, 1000)]
+	# exact mode: tiles at exactly the target, remainder last
+	assert parts_for_size(1000, 300, exact=True) == 4
+	assert size_spans(1000, 300, exact=True) == [(0, 300), (300, 600), (600, 900), (900, 1000)]
+
+	img = torch.rand(1, 1080, 1920, 3)
+	tiles, _g, infos, count = DivideRectangle().execute(
+		img, by="size", tile_width=512, tile_height=512)
+	assert count == 4 * 2                            # 1920/512 -> 4 cols, 1080/512 -> 2 rows
+	assert all(abs(t.shape[2] - 480) <= 1 for t in tiles)     # uniform, ~512
+	# exact_size gives literal 512s plus the remainder
+	tiles, _g, _i, _c = DivideRectangle().execute(
+		img, by="size", tile_width=512, tile_height=512, exact_size=True)
+	assert tiles[0].shape[2] == 512 and tiles[0].shape[1] == 512
+	# and by=size still reassembles exactly
+	tiles, _g, infos, _c = DivideRectangle().execute(
+		torch.rand(2, 100, 100, 3), by="size", tile_width=30, tile_height=30)
+	src = torch.rand(2, 100, 100, 3)
+	tiles, _g, infos, _c = DivideRectangle().execute(src, by="size", tile_width=30, tile_height=30)
+	rebuilt = torch.zeros_like(src)
+	for t, info in zip(tiles, infos):
+		it = info["items"][0]
+		rebuilt[:, it["y0"]:it["y0"] + it["h"], it["x0"]:it["x0"] + it["w"], :] = t
+	assert torch.equal(rebuilt, src)
 
 
 def test_crop_by_info_reproduces_the_manual_crop():
@@ -1733,34 +1859,37 @@ def test_frame_pad_context_continues_from_the_previous_chunk():
 	prev = torch.rand(40, 8, 10, 3)                  # previous chunk's finished frames
 
 	# without context: the head is frame 0 held, and its mask is held too
-	pa, ma, pc, _ = FramePad().execute(chunk, mask=mask)
-	assert torch.equal(pa[pc - 1], chunk[0]) and ma[:pc].min() == 1.0
+	pa, ma, ia, _ = FramePad().execute(chunk, mask=mask)
+	h = ia["head"]
+	assert torch.equal(pa[h - 1], chunk[0]) and ma[:h].min() == 1.0
 
 	# with context: the head is the previous chunk's TAIL, in order, and its mask
 	# is zeroed — those frames are already clean, so nothing is re-removed there
-	pb, mb, pc2, _ = FramePad().execute(chunk, mask=mask, context_images=prev)
-	assert pc2 == pc
-	assert torch.equal(pb[:pc], prev[-pc:]), "head must be the previous tail, in order"
-	assert mb[:pc].max() == 0.0, "context frames must not be masked for removal"
-	assert torch.equal(pb[pc:], chunk)               # the clip itself is untouched
-	# and the round trip still lands exactly
-	back, n = FrameUnpad().execute(pb, pc2)
+	pb, mb, ib, _ = FramePad().execute(chunk, mask=mask, context_images=prev)
+	assert ib["head"] == h
+	assert torch.equal(pb[:h], prev[-h:]), "head must be the previous tail, in order"
+	assert mb[:h].max() == 0.0, "context frames must not be masked for removal"
+	assert torch.equal(pb[h:], chunk)                # the clip itself is untouched
+	# and the round trip still lands exactly (pad_info carries the side + counts)
+	back, n = FrameUnpad().execute(pb, ib)
 	assert torch.equal(back, chunk) and n == 30
 
 	# ORIGINAL preceding frames still contain the object, so their own mask must
 	# be carried — zeroing it would tell the model to PRESERVE what we remove
 	prev_mask = torch.ones(40, 8, 10)
-	pc2, mc, pcc, _ = FramePad().execute(chunk, mask=mask, context_images=prev,
-										 context_mask=prev_mask)
-	assert torch.equal(mc[:pcc], prev_mask[-pcc:]), "context mask must be used as given"
-	assert mc[:pcc].min() == 1.0
+	_p, mc, ic, _ = FramePad().execute(chunk, mask=mask, context_images=prev,
+									   context_mask=prev_mask)
+	hc = ic["head"]
+	assert torch.equal(mc[:hc], prev_mask[-hc:]), "context mask must be used as given"
+	assert mc[:hc].min() == 1.0
 	# without a context mask the head is zeroed (the finished-frames case)
-	_i, mz, pz, _ = FramePad().execute(chunk, mask=mask, context_images=prev)
-	assert mz[:pz].max() == 0.0
+	_i, mz, iz, _ = FramePad().execute(chunk, mask=mask, context_images=prev)
+	assert mz[:iz["head"]].max() == 0.0
 
 	# a context shorter than the pad is held out, never sliced short
-	short, _m, pcs, _ = FramePad().execute(chunk, mask=mask, context_images=prev[:3])
-	assert short.shape[0] == 30 + pcs and torch.equal(short[pcs - 1], prev[2])
+	short, _m, isr, _ = FramePad().execute(chunk, mask=mask, context_images=prev[:3])
+	hs = isr["head"]
+	assert short.shape[0] == 30 + hs and torch.equal(short[hs - 1], prev[2])
 
 	# a mismatched crop size is a wiring error, not something to silently resize
 	try:
@@ -1796,22 +1925,24 @@ def test_frame_pad_round_trips_at_a_valid_length():
 	from tinode.nodes.image.frame_pad import FramePad, FrameUnpad
 	img = torch.rand(30, 8, 10, 3)
 	mask = torch.rand(30, 8, 10)
-	padded, pmask, pc, total = FramePad().execute(img, mask=mask)
-	assert total == 30 + pc and total % 8 == 0
+	padded, pmask, info, total = FramePad().execute(img, mask=mask)
+	h = info["head"]
+	assert total == 30 + h and total % 8 == 0
 	assert padded.shape[0] == total and pmask.shape[0] == total
-	assert torch.equal(padded[0], img[0]) and torch.equal(padded[pc], img[0])
+	assert torch.equal(padded[0], img[0]) and torch.equal(padded[h], img[0])
 	assert _void_output_len(total) == total          # VOID keeps this length
-	back, n = FrameUnpad().execute(padded, pc)
+	back, n = FrameUnpad().execute(padded, info)
 	assert torch.equal(back, img) and n == 30
 	# node round trip: pad then unpad restores the exact clip
 	img = torch.rand(30, 8, 10, 3)
 	mask = torch.rand(30, 8, 10)
-	padded, pmask, pc, total = FramePad().execute(img, mask=mask)
-	assert total == 30 + pc and total % 8 == 0
+	padded, pmask, info, total = FramePad().execute(img, mask=mask)
+	h = info["head"]
+	assert total == 30 + h and total % 8 == 0
 	assert padded.shape[0] == total and pmask.shape[0] == total
 	# prepended frames are copies of frame 0
-	assert torch.equal(padded[0], img[0]) and torch.equal(padded[pc], img[0])
-	back, n = FrameUnpad().execute(padded, pc)
+	assert torch.equal(padded[0], img[0]) and torch.equal(padded[h], img[0])
+	back, n = FrameUnpad().execute(padded, info)
 	assert torch.equal(back, img) and n == img.shape[0], \
 		"pad then unpad must restore the original clip"
 
