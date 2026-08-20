@@ -14,10 +14,10 @@ three outputs, so the two are drop-in interchangeable and chain in either order:
   segments  the incoming segments plus your manual boxes
 
 Manual boxes get ids from a high base (>= 1,000,000) so they never collide with
-SAM3 track ids. They are stamped with a signature of the image+segments they were
-drawn against; when that input changes the boxes are stale and are dropped
-automatically (both here and in the editor) rather than being re-applied to a
-different clip.
+SAM3 track ids. Unlike the other segment editors, drawn boxes PERSIST when the
+input changes — reusable across takes of the same shot — and are removed only by
+the editor's ✕ clear button. Boxes whose frame or extent falls outside the
+current clip are ignored, not errors.
 """
 
 from __future__ import annotations
@@ -84,10 +84,12 @@ class AddSegments(TiNode):
 
 	@staticmethod
 	def _manual_items(raw, sig):
-		"""Decode the manual-box widget, dropping boxes drawn against other input.
+		"""Decode the manual-box widget. Boxes PERSIST across input changes.
 
-		Accepts the current {"sig","items"} form and the older bare-list form (which
-		carries no signature, so it is trusted as-is).
+		The signature is still stored (the editor uses it to notice a new clip),
+		but it no longer gates the boxes: drawn boxes survive until the editor's
+		clear button removes them. Accepts the {"sig","items"} form and the older
+		bare-list form.
 		"""
 		try:
 			data = json.loads(raw) if raw else {}
@@ -97,9 +99,6 @@ class AddSegments(TiNode):
 			return data
 		if not isinstance(data, dict):
 			return []
-		stored = data.get("sig")
-		if stored is not None and stored != sig:
-			return []          # input changed -> previous boxes are stale
 		items = data.get("items")
 		return items if isinstance(items, list) else []
 

@@ -242,7 +242,17 @@ function setup(node) {
 	mask.type = "range"; mask.min = "0"; mask.max = "100"; mask.value = "70";
 	mask.title = "Mask overlay opacity (press M to toggle)";
 	mask.style.cssText = "width:70px;flex:0 0 auto;accent-color:#ff0080;";
-	bar.append(prev, slider, next, counter, mlabel, mask);
+	const clearBtn = mkBtn("✕ clear");
+	clearBtn.title = "Delete every drawn box, on ALL frames";
+	clearBtn.style.color = "#ff9a9a";
+	clearBtn.onclick = () => {
+		const n = readManual(node).length;
+		if (!n) return;
+		if (!window.confirm(`Add Segments: delete all ${n} drawn box(es) on every frame?`)) return;
+		writeManual(node, []);
+		draw(node);
+	};
+	bar.append(prev, slider, next, counter, mlabel, mask, clearBtn);
 
 	const canvas = document.createElement("canvas");
 	canvas.style.cssText = "flex:1;min-height:0;width:100%;border-radius:4px;touch-action:none;display:block;cursor:crosshair;";
@@ -361,8 +371,9 @@ function fitNodeToAspect(node) {
 
 function applyManifest(node, manifest) {
 	const tas = node._tas;
-	// A different input (image and/or segments) invalidates everything drawn
-	// against the old one — reset instead of stamping stale boxes onto a new clip.
+	// Boxes PERSIST across input changes (they're cleared only by the ✕ clear
+	// button) — a new clip just restamps them with its signature. Boxes whose
+	// frame is beyond the new clip are simply ignored by the backend.
 	const prev = readManualObj(node);
 	const isNewInput = prev.sig !== manifest.sig;
 
@@ -374,18 +385,13 @@ function applyManifest(node, manifest) {
 	tas.fullH = manifest.full_h || tas.natH;
 	tas.slider.max = String(Math.max(0, manifest.num_frames - 1));
 
-	if (isNewInput) {
-		writeManual(node, []);                       // clears, stamped with the new sig
-		setFrameWidget(node, 0);
-		if (prev.items.length) {
-			console.info(`[tinode] Add Segments: new input — cleared ${prev.items.length} drawn box(es).`);
-		}
+	if (isNewInput && prev.items.length) {
+		writeManual(node, prev.items);               // keep, restamped with the new sig
+		console.info(`[tinode] Add Segments: new input — kept ${prev.items.length} drawn box(es).`);
 	}
 
 	fitNodeToAspect(node);
-	const start = isNewInput
-		? 0
-		: clamp(getWidget(node, "current_frame")?.value ?? 0, 0, manifest.num_frames - 1);
+	const start = clamp(getWidget(node, "current_frame")?.value ?? 0, 0, manifest.num_frames - 1);
 	loadFrame(node, start);
 }
 
