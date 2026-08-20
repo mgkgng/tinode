@@ -88,7 +88,8 @@ against, so it is never silently re-applied to a different clip.
 | **Mask Bbox Crop** | Crop to a mask's bounding box + padding, rounded to `divisible_by`. Per-frame boxes are temporally smoothed so the crop stops swimming; `shared_bbox` gives one static box instead. |
 | **Mask Crop · Center Fill** | Crop each mask onto its own square black canvas, scaled to fill — for crowd → per-face pipelines. |
 | **Bbox Crop · Manual** | Interactive crop (above). |
-| **Mask Crop Paste Back** | Composite processed crops back using `crop_info`. Blends through an optional mask, feathered. |
+| **Crop By Info** | Re-cut the exact crop a saved `crop_info` describes (the forward of Paste Back) — a native-scale slice, bit-exact, no coords to re-enter. Rejects rescaled crop_info rather than resample. |
+| **Mask Crop Paste Back** | Composite processed crops back using `crop_info`. Blends through an optional mask, `gaussian`/`box` feathered; **bit-exact outside the mask**, and no resample when the crop isn't rescaled. |
 
 > **The one rule for Paste Back:** its `image` must be the **original frame the
 > crop node consumed**, never the crop node's output. `crop_info` coordinates
@@ -115,7 +116,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Trim Video · Cut Frames** | Cut N frames off the head and/or tail (the video ltrim/rtrim). Never emits an empty batch. |
 | **Cut Video · Start + Frame Count** | Extract an exact contiguous span. The start supports Python-style negative indices (`-1` is the last frame); invalid or overlong ranges report a clear error. |
 | **Mask to Segment** | Convert a MASK batch into one tracked, editable `TI_SAM3_SEGMENTS` object for Pick Segments or Add Segments. Empty frames and video alignment are preserved. |
-| **Pick Segments** / **Add Segments** / **Delete Segments** | Interactive segment curation: toggle whole tracked objects, draw new per-frame boxes, or remove individual segment instances from specific frames. |
+| **Pick Segments** / **Add Segments** / **Delete Segments** | Interactive segment curation: toggle whole tracked objects, draw new per-frame boxes, or remove individual segment instances from specific frames. All three also emit **`bbox_mask`** — filled rectangles over each segment's bbox instead of its outline, which gives an inpainting model clean margin on every side (at the cost of regenerating everything else inside the box). |
 | **Segments to Masks** | Split the (unmerged) `segments` stream into a per-object mask batch — one `[frames,H,W]` MASK per id, as a LIST you can take one at a time. Set `object_ids` to a single id to get just that object. |
 | **Segment Mask · Select** | One object's mask as a **single** MASK, picked by `index` (0..count-1) — for stepping through objects into a mask input like Mask Bbox Crop. Reports the `id` and total `count`. |
 
@@ -123,8 +124,19 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | Node | Does |
 |---|---|
 | **Video Concatenate** | Append one native `VIDEO` after another — hard cut, audio kept in sync. Built to accumulate a clip per iteration across a Foreach loop. |
-| **Load Video** | Decode a file from `input/` to an IMAGE batch via ffmpeg (frame cap / skip / every-nth / force-rate / resize). Faithful colour by default; `force_full_range` fixes a mis-tagged clip. Outputs images, frame count, fps. |
+| **Load Video** | Decode a file from `input/` to an IMAGE batch via ffmpeg (frame cap / skip / every-nth / force-rate / resize). Faithful colour by default; `force_full_range` fixes a mis-tagged clip. Outputs images, frame count, fps, plus **`stem` / `path` / `video`** — the same handles Load Videos gives, so one clip can drive the per-clip store. `video` is the whole untouched file, so it only matches `images` at default frame-selection settings (the node says so when it doesn't). |
+| **Load Videos** | Gather many clips from a folder as an Inspire `ITEM_LIST` of **lazy** native `VIDEO`s, to loop over one at a time. `directory` is relative to `input/` or an absolute path; `pattern` filters by wildcard (`*.mp4`, `PROJECT_AMIR_*`); `filenames` (one per line, exact or wildcard) picks an exact set. Outputs `item_list`, a per-clip `videos` list, and `count`. |
 | **Save Video · Combine** | Encode an IMAGE batch to mp4 / webm / lossless PNG frames via ffmpeg, with the colour controls (`color_range`, `colorspace`, `pix_fmt`, `crf`) that keep a grade intact. Previews in the node. |
+| **Video Source Path** | The file a native `VIDEO` was loaded from → `stem` / `filename` / `path`. Keys a clip's saved artifacts inside a Foreach loop. |
+| **Save Crop & Mask** | Phase 1 of batch removal: write a clip's mask (lossless PNG, crop space) + its `crop_info` + a manifest, keyed by `stem`, under `output/<subdir>/`. Optionally also exports the **cropped RGB frames** as a lossless PNG sequence (`crop_image`, 16- or 8-bit) so the removal step — even an external tool — works on the exact pixels. The source video is never re-encoded. |
+| **Load Masks** | Phase 2: scan the mask store → an Inspire `ITEM_LIST`, one item per clip. `source_dir` re-locates moved footage. |
+| **Load Mask** | Inside the phase-2 loop: one item → `video` (original, re-decoded) + `mask` (crop space) + `crop_info` + `stem`. |
+| **Load Cropped Frames** | Inside the phase-2 loop: one item → the lossless `crops` Save Crop & Mask exported (8- or 16-bit), for feeding removal without re-decoding. |
+| **Split Video · Chunks** | Cut a clip into pieces by a `cuts` string (`18, 124` → 0..17, 18..123, 124..end) and emit an Inspire `ITEM_LIST` — one chunk per loop iteration. `max_length` also caps chunk length (189 fits VOID's 197 once Frame Pad prepends 8), splitting long spans evenly rather than leaving a stub tail. Lossless: a tensor slice. |
+| **Chunk Item** | Inside the loop: one item → `images` + `mask` + `start`/`end` + `chunk_index`/`chunk_count`. |
+| **Join Chunks** | Accumulate processed chunks back into one clip across the loop (wire the accumulator to `ForeachListBegin.intermediate_output`). Split → join with no processing is bit-exact. |
+| **Frame Pad** | Prepend duplicate head frames so the clip length is `4n+1` (a video-VAE constraint, e.g. Netflix VOID) while adding ≥`min_prepend` (8 reduces head error). Pads the mask in lockstep; outputs `pad_count`. |
+| **Frame Unpad** | Drop the `pad_count` head frames Frame Pad added, recovering the original-length result. |
 
 #### Video Concatenate
 
@@ -197,6 +209,107 @@ core's `VideoFromComponents`, so the file is exactly what `Create Video` →
 These exist so the pack can load and save video without a separate video-nodes
 install. They are **not** 1:1 VHS clones — no audio, no in-browser upload (drop
 files in `input/`), no batch manager — they cover the decode/encode path itself.
+
+#### Load Videos — a folder of clips, one iteration each
+
+`Load Video` (singular) decodes **one** file to an IMAGE batch. `Load Videos`
+(plural) is for the other case: you have many clips — possibly gigabytes total —
+and want a loop to process them one at a time.
+
+It scans `directory` and outputs an Inspire **`ITEM_LIST`** of native `VIDEO`s.
+Wire `item_list` into **▶Foreach List** and each iteration's `item` is one clip:
+
+```
+Load Videos.item_list ──► ForeachListBegin.item_list
+                          ForeachListBegin.item ──► (Get Video Components ──► your per-clip graph)
+                                                     ...accumulate with Video Concatenate...
+                          ForeachListEnd.result ──► Save Video   (once, at the end)
+```
+
+**Why this handles ">5GB of video" without exhausting RAM.** Every item is a
+*lazy* `VideoFromFile` — a path, not pixels. The whole list costs almost
+nothing; only the clip the current iteration decodes is ever in memory, and it
+is released before the next. Loading every clip to an IMAGE batch up front would
+instead need the **sum** of all of them at once. The file's size on disk is
+never the wall — decoded frames are (~25 MB per 1080p frame, ~100 MB per 4K
+frame), and the loop keeps that to one clip at a time.
+
+- `directory` — relative to `input/`, or an **absolute** path so you can point
+  straight at a source folder elsewhere without copying gigabytes into `input/`.
+- `pattern` — optional **wildcard** filter over the folder: `*.mp4`,
+  `PROJECT_AMIR_*` (case-insensitive, videos only). Empty = every video.
+- `filenames` — optional, one per line, to load an exact set in an exact order.
+  Each line is an exact name (`clip` finds `clip.mp4`) **or** a wildcard
+  (`PROJECT_AMIR_*.mp4`); globs expand in folder order, exact names keep their
+  line order, duplicates are dropped. Takes precedence over `pattern`. Empty (and
+  no pattern) loads every video, sorted by name (`reverse` flips the result).
+- `videos` (a ComfyUI list) is the other idiom: wire it anywhere and every
+  downstream node runs once per clip, no Foreach node needed.
+
+The folder is empty-checked and missing named files **raise** — a silently empty
+list makes ▶Foreach List throw and makes a per-item branch skip without a word.
+
+#### Two-workflow object removal (mask now, remove later)
+
+For removing an object across many clips, split the work in two passes with a
+disk handoff — so masking (light, reviewable) and removal (heavy, unattended)
+don't have to run together, and a crash mid-batch never re-does finished work.
+
+**Phase 1 — author masks** (loop over `Load Videos`):
+```
+item(VIDEO) ─┬─► Get Video Components ─► Bbox Crop · Manual ─► SAM3 ─► … ─► mask
+             │                                    └─────────► crop_info ─┐
+             └─► Video Source Path ─► stem ──────────────────────────────┤
+                                                     mask + crop_info + stem ─► Save Crop & Mask ─► ForeachListEnd
+```
+`Save Crop & Mask` writes, per clip under `output/ti_masks/<stem>/`: the mask as a
+**lossless** PNG sequence in crop space, the `crop_info`, and a manifest. The
+source is never re-encoded.
+
+**Phase 2 — remove + paste back** (loop over `Load Masks`):
+```
+item ─► Load Mask ─┬─ video ─► Get Video Components ─► frames ─┬─► Crop By Info ─► [ your removal model + mask ] ─► filled crop ─┐
+                   ├─ crop_info ──────────────────────────────┼──────────────────────────────────────────────────────────────┤
+                   └─ mask ───────────────────────────────────┘                                     frames + filled + crop_info + mask ─► Mask Crop Paste Back ─► Save Video
+```
+`Crop By Info` reproduces phase 1's exact crop (bit-exact); `Mask Crop Paste
+Back` composites the filled crop back through the mask — everything outside the
+mask stays the untouched original, so there is no crop-rectangle seam.
+
+A ready-to-run **phase-2 template** ships at
+[`workflows/phase2_object_removal.json`](workflows/phase2_object_removal.json):
+it loads the store, loops, and pastes back to a lossless master, wired as an
+identity no-op today — drop your removal model into the marked gap (crops + mask
+→ filled crops).
+
+**No quality loss anywhere in the chain:** masks are lossless PNG, crops and
+paste-back are native-scale tensor ops (no resample unless you rescale), and the
+source is only ever decoded, never re-encoded. The single lossy step in the
+whole system is the *final* `Save Video` encode — set it to `png` frames or
+`crf 0` + `yuv444p` for a lossless master.
+
+#### Paste-back quality — is it the best for 4K?
+
+For **video** object removal, a **feathered alpha composite over the untouched
+original** (what Paste Back does) is the right default, and better than the
+fancier options for this job:
+
+- **Feathered alpha (default).** Only the masked hole is written; every other
+  pixel is bit-exact original, so no global colour shift and nothing to seam.
+  It is deterministic per frame, so it does **not** flicker. Use `gaussian`
+  feather at 4K for a smoother edge than `box`.
+- **Laplacian (multi-band) blending.** Great for compositing two *different*
+  images across a long seam (panorama stitching). For removal, if your inpainter
+  fills plausibly it buys little, and applied per-frame it can smear
+  high-frequency detail near the edge. Worth it only as a *narrow-band* edge
+  refiner when a residual tone step remains — say the word and it's a bolt-on.
+- **Poisson (seamless cloning).** **Not recommended for video.** Solving each
+  frame independently in the gradient domain drifts frame-to-frame → **flicker**,
+  can bleed colour across strong edges, and is expensive at 4K.
+
+Bottom line: get the *fill* right (a temporally-aware video inpainter) and a
+feathered alpha composite is professional-grade. The blend is not where 4K
+quality is won or lost — the inpainter and staying lossless are.
 
 #### Video colour
 
@@ -297,6 +410,14 @@ unquoted (`["cat","dog"]` → `cat`, `dog`). A lone object counts as one item, a
 JSON Lines is accepted as a fallback. Invalid JSON and an **empty array both
 raise** — an empty list makes ▶Foreach List throw an `IndexError`, and makes the
 ComfyUI-list output skip the whole branch in silence.
+
+### `tinode/util`
+| Node | Does |
+|---|---|
+| **Item Cursor** | Step through an `ITEM_LIST` **by hand**, one item per queue. A ▶Foreach List runs everything start to finish, so you can only tune settings on item 0; this emits the item at `index` instead, with ◀ Prev / Next ▶ / ⟲ buttons and a readout ("3 / 19 · sh0030 · crop 1"). Re-queue as often as you like on the current item, then step. Drop-in for `ForeachListBegin` — same `item`, and no loop end to wire. |
+| **Item Params** | Per-item settings that survive the batch. A node's widgets are GLOBAL, so tuning crop 1 then crop 2 leaves only the last value — this stores one JSON object **per key** and hands back the current key's entry. Tune an item, step away, step back: its settings return, and the Foreach run replays them. Guards against saving one item's edits onto the next. |
+| **Param Get** | Pull one named value out of an Item Params entry, typed to drive a widget input: `string` (prompt, boxes, cuts), `float` (threshold, alpha), `int` (counts), `boolean` (flags), plus `found`. Missing names fall back rather than erroring. |
+| **Validation Gate** | Pause the running workflow until you approve. A floating panel shows a `preview` (e.g. the mask overlay) with Approve (Enter) / Reject (Esc); Approve passes the value through and the graph continues, Reject stops the run. Blocks the execution thread on an event released by a POST route, polling ComfyUI's interrupt so Cancel still works; headless (no server) it passes straight through so batch/cron runs never hang. This is what lets you curate every clip/crop by hand *inside* a Foreach loop — the loop waits for you at each item. |
 
 ### `tinode/face`
 | Node | Does |
