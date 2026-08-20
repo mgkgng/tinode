@@ -1402,6 +1402,21 @@ def test_composite_crops_use_mask_off_writes_the_whole_rectangle():
 	assert torch.equal(off[:, :10, :, :], img[:, :10, :, :]), "outside it is untouched"
 
 
+def test_apply_mask_alpha_makes_rgba():
+	from tinode.nodes.image.apply_alpha import ApplyMaskAlpha
+	img = torch.rand(3, 20, 24, 3)
+	mask = torch.rand(3, 20, 24)
+	(rgba,) = ApplyMaskAlpha().execute(img, mask)
+	assert tuple(rgba.shape) == (3, 20, 24, 4)
+	assert torch.equal(rgba[..., :3], img)           # rgb preserved
+	assert torch.equal(rgba[..., 3], mask.clamp(0, 1))
+	(inv,) = ApplyMaskAlpha().execute(img, mask, invert=True)
+	assert torch.allclose(inv[..., 3], (1.0 - mask).clamp(0, 1))
+	# a single mask broadcasts across frames
+	(b,) = ApplyMaskAlpha().execute(img, torch.rand(1, 20, 24))
+	assert b.shape[0] == 3
+
+
 def test_composite_crops_pastes_multiple_crops_back():
 	from tinode.nodes.image.crop_bbox_manual import BboxCropMulti
 	from tinode.nodes.image.removal_pass import CompositeCrops
