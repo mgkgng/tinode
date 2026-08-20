@@ -30,6 +30,32 @@ def _first(v, default=None):
 	return v
 
 
+def _gaussian_kernel1d(radius: int, device, dtype):
+	"""Normalised 1-D Gaussian of length 2*radius+1 (sigma = radius/2)."""
+	sigma = max(1e-6, radius / 2.0)
+	xs = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+	k = torch.exp(-(xs * xs) / (2 * sigma * sigma))
+	return k / k.sum()
+
+
+def _feather_alpha(full, radius: int, mode: str):
+	"""Blur a [1,1,H,W] alpha plane by `radius`, replicate-padded at the frame edge.
+
+	Box (avg_pool) is cheap; gaussian gives a smoother, more professional falloff
+	at high resolution. Replicate padding stops a crop that touches the IMAGE
+	edge from fading against imaginary zero-alpha pixels beyond the canvas.
+	"""
+	if mode == "gaussian":
+		k1 = _gaussian_kernel1d(radius, full.device, full.dtype)
+		full = F.pad(full, (radius, radius, radius, radius), mode="replicate")
+		full = F.conv2d(full, k1.view(1, 1, 1, -1))       # horizontal
+		full = F.conv2d(full, k1.view(1, 1, -1, 1))       # vertical
+		return full
+	k = radius * 2 + 1
+	full = F.pad(full, (radius, radius, radius, radius), mode="replicate")
+	return F.avg_pool2d(full, kernel_size=k, stride=1)
+
+
 @register
 class MaskCropPasteBack(TiNode):
 	DISPLAY_NAME = "Mask Crop Paste Back (ti)"
@@ -46,7 +72,17 @@ class MaskCropPasteBack(TiNode):
 			},
 			"optional": {
 				"masks": ("MASK",),
-				"feather": ("INT", {"default": 0, "min": 0, "max": 256, "step": 1}),
+				"feather": ("INT", {"default": 0, "min": 0, "max": 256, "step": 1,
+					"tooltip": "Soften the mask edge by this many pixels so the "
+							   "removed region blends into the original."}),
+				"feather_mode": (["gaussian", "box"], {"default": "gaussian",
+					"tooltip": "Gaussian = smoother falloff (best for 4K); box = "
+							   "the older, harder average blur."}),
+				"frame_offset": ("INT", {"default": 0, "min": 0, "max": 9999999, "step": 1,
+					"tooltip": "Paste starting at this frame of the source. A crop "
+							   "taken from a CHUNK covers only part of the clip, so "
+							   "without its start frame the result lands on the "
+							   "beginning of the video instead of where it came from."}),
 			},
 		}
 
@@ -54,13 +90,16 @@ class MaskCropPasteBack(TiNode):
 	RETURN_NAMES = ("image",)
 	FUNCTION = "execute"
 
-	def execute(self, image, crops, crop_info, masks=None, feather=0):
+	def execute(self, image, crops, crop_info, masks=None, feather=0,
+				feather_mode="gaussian", frame_offset=0):
 		ilist = image if isinstance(image, list) else [image]
 		src = torch.cat(
 			[s if s.dim() == 4 else s.unsqueeze(0) for s in ilist], dim=0
 		)                                    # [S,H,W,C]
 		info = _first(crop_info)
 		feather = int(_first(feather, 0))
+		feather_mode = _first(feather_mode, "gaussian")
+		offset = int(_first(frame_offset, 0) or 0)
 
 		# crops can arrive as a list (per-frame) or a single batch tensor.
 		clist = crops if isinstance(crops, list) else [crops]
@@ -81,48 +120,60 @@ class MaskCropPasteBack(TiNode):
 		n = min(len(items), crop_batch.shape[0])
 
 		S = out.shape[0]
-		if S != 1 and S != n:
+		# Fewer crops than source frames is legitimate: they cover a WINDOW of the
+		# clip (a chunk). What matters is only that the window FITS — testing the
+		# offset for truthiness instead made chunk 0, whose offset is a perfectly
+		# valid 0, indistinguishable from "no offset was given" and rejected it.
+		if S != 1 and n > S:
 			raise RuntimeError(
-				f"Cannot paste {n} crop(s) into a {S}-frame source: pass a single "
-				f"source image, or one source frame per crop."
+				f"Cannot paste {n} crop(s) into a {S}-frame source: there are more "
+				f"crops than frames. Pass a single source image, or the frames the "
+				f"crops were taken from."
 			)
+		# Then the window itself: the crops must fit at the offset they claim.
+		if S != 1 and offset + n > S:
+			raise RuntimeError(
+				f"Paste Back: frame_offset {offset} + {n} crop frame(s) runs past "
+				f"the {S}-frame source (would need {offset + n}).")
 
 		for i in range(n):
 			it = items[i]
 			if it is None:
 				continue
-			f = 0 if S == 1 else i          # every crop onto one photo, or frame-paired
+			# every crop onto one photo, or frame-paired (shifted to the chunk's
+			# position in the clip when an offset is given)
+			f = 0 if S == 1 else offset + i
 			y0, x0, h, w = it["y0"], it["x0"], it["h"], it["w"]
 			oy, ox, nh, nw = it["oy"], it["ox"], it["nh"], it["nw"]
 
 			# pull the placed region out of the size x size canvas
 			region = crop_batch[i, oy:oy + nh, ox:ox + nw, :]      # [nh,nw,C]
-			region = region.permute(2, 0, 1)[None]
-			region = F.interpolate(region, size=(h, w), mode="bilinear", align_corners=False)
-			region = region[0].permute(1, 2, 0)                    # [h,w,C]
+			rescaled = (nh != h or nw != w)
+			if rescaled:
+				region = region.permute(2, 0, 1)[None]
+				region = F.interpolate(region, size=(h, w), mode="bilinear", align_corners=False)
+				region = region[0].permute(1, 2, 0)                # [h,w,C]
+			# else: no resample — the fill is bit-exact the generated pixels.
 
 			# alpha: mask region warped back, else solid box
 			if mask_batch is not None and i < mask_batch.shape[0]:
 				mr = mask_batch[i, oy:oy + nh, ox:ox + nw]         # [nh,nw]
-				mr = F.interpolate(mr[None, None], size=(h, w),
-								   mode="bilinear", align_corners=False)[0, 0]
+				if rescaled:
+					mr = F.interpolate(mr[None, None], size=(h, w),
+									   mode="bilinear", align_corners=False)[0, 0]
 			else:
 				mr = torch.ones(h, w, dtype=region.dtype, device=region.device)
 
 			if feather > 0:
-				k = feather * 2 + 1
-				# Blur in full-frame coordinates. Replicating at the IMAGE edge
-				# prevents a crop which touches that edge from fading against
-				# imaginary zero-alpha pixels beyond the canvas. Zeros around an
-				# internal crop boundary remain zeros, so those real seams still
-				# get feathered.
+				# Blur in full-frame coordinates so an internal crop boundary's
+				# real zero-alpha seam still feathers, while a crop that touches
+				# the IMAGE edge is replicate-padded and does not fade to nothing.
 				full = torch.zeros(
 					(1, 1, out.shape[1], out.shape[2]),
 					dtype=mr.dtype, device=mr.device,
 				)
 				full[0, 0, y0:y0 + h, x0:x0 + w] = mr
-				full = F.pad(full, (feather, feather, feather, feather), mode="replicate")
-				full = F.avg_pool2d(full, kernel_size=k, stride=1)
+				full = _feather_alpha(full, feather, feather_mode)
 				mr = full[0, 0, y0:y0 + h, x0:x0 + w]
 
 			a = mr.clamp(0, 1).unsqueeze(-1)                       # [h,w,1]
