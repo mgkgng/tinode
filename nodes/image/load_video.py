@@ -10,8 +10,13 @@ tagged colour metadata. If a clip is MIS-tagged (its look changes vs a player),
 `force_full_range` re-reads it treating the source as full-range, which undoes
 the most common "washed out on load" case. See README > Video colour.
 
-Not a 1:1 VHS clone: no audio output, no in-browser upload (drop files in the
-input folder), no batch manager. It covers the load path itself.
+Besides the frames it also emits `stem` / `path` / `video`, the same handles
+Load Videos gives, so a single clip can drive the per-clip store (Save Crop &
+Mask keys on the stem, phase 2 reopens the recorded path) without swapping in
+the multi-file loader.
+
+Not a 1:1 VHS clone: no audio output, no batch manager. It covers the load path
+itself.
 """
 
 from __future__ import annotations
@@ -23,6 +28,15 @@ import torch
 from ...base import TiNode
 from ...registry import register
 from ._video_io import VIDEO_EXTS, decode, probe
+
+# ComfyUI's native lazy file-backed VIDEO, so this node can hand on the source
+# clip itself the way Load Videos does. Imported defensively (tests/headless).
+try:
+	from comfy_api.latest import InputImpl  # noqa: PLC0415
+
+	VideoFromFile = InputImpl.VideoFromFile
+except Exception:  # noqa: BLE001
+	VideoFromFile = None
 
 
 def _input_videos():
@@ -70,8 +84,19 @@ class LoadVideo(TiNode):
 			},
 		}
 
-	RETURN_TYPES = ("IMAGE", "INT", "FLOAT")
-	RETURN_NAMES = ("images", "frame_count", "fps")
+	# stem / path / video are APPENDED, never inserted: a saved workflow stores
+	# links by slot INDEX, so adding outputs at the end keeps old graphs wired.
+	RETURN_TYPES = ("IMAGE", "INT", "FLOAT", "STRING", "STRING", "VIDEO")
+	RETURN_NAMES = ("images", "frame_count", "fps", "stem", "path", "video")
+	OUTPUT_TOOLTIPS = (
+		"The decoded frames.",
+		"How many frames were loaded.",
+		"Frames per second.",
+		"Filename without extension — the key Save Crop & Mask stores a clip by.",
+		"Absolute path to the source file, recorded so a later pass can reopen it.",
+		"The source clip as a native VIDEO — the WHOLE untouched file, ignoring "
+		"the frame-selection and resize options above.",
+	)
 	FUNCTION = "execute"
 
 	@classmethod
@@ -106,4 +131,14 @@ class LoadVideo(TiNode):
 			tonemap=str(tonemap_hdr),
 		)
 		fps = float(force_rate) if force_rate and force_rate > 0 else (info["fps"] or 0.0)
-		return (imgs, imgs.shape[0], fps)
+
+		stem = os.path.splitext(os.path.basename(path))[0]
+		# The VIDEO is the file as-is. The IMAGE output may have been capped,
+		# strided or resized, so the two only match at default settings — say so
+		# rather than silently handing on a clip that disagrees with the frames.
+		native = VideoFromFile(path) if VideoFromFile is not None else None
+		if native is not None and (frame_load_cap or skip_first_frames
+								   or int(select_every_nth) > 1 or force_rate):
+			print("[tinode] Load Video: frame selection is active, so `video` (the "
+				  "whole source file) does not match `images`.")
+		return (imgs, imgs.shape[0], fps, stem, path, native)
