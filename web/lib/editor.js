@@ -27,7 +27,7 @@ export function colorForId(id) {
 
 export function clamp(v, lo, hi) { return Math.max(lo, Math.min(v, hi)); }
 
-/** Parse an aspect ratio string ("16:9", "1.777", "4:3") to W/H, or null. */
+/** Parse one aspect ratio token ("16:9", "1.777", "4:3") to W/H, or null. */
 export function parseRatio(s) {
 	if (s == null) return null;
 	s = String(s).trim();
@@ -41,6 +41,20 @@ export function parseRatio(s) {
 		r = Number(s);
 	}
 	return (isFinite(r) && r > 0) ? r : null;
+}
+
+/** Parse a comma-separated list of ratios ("16:9, 1:1, 4:3") to an array of
+ *  W/H numbers (invalid tokens dropped). Empty list = free. */
+export function parseRatios(s) {
+	if (s == null) return [];
+	return String(s).split(",").map(parseRatio).filter((r) => r != null);
+}
+
+/** The ratio for box index `i` from a ratios list: the i-th, or the last one
+ *  when there are fewer ratios than boxes (so a single ratio applies to all). */
+export function ratioForIndex(ratios, i) {
+	if (!ratios || !ratios.length) return null;
+	return ratios[Math.min(i, ratios.length - 1)];
 }
 
 /** Reshape a just-resized box to width/height == ratio, keeping the grip's

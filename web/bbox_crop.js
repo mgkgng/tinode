@@ -15,8 +15,8 @@
 
 import { app } from "../../scripts/app.js";
 import {
-	clamp, constrainToRatio, fillNodeWidth, getWidget, parseRatio, pointerPos,
-	releaseGraphPointer, urlFor,
+	clamp, constrainToRatio, fillNodeWidth, getWidget, parseRatios, pointerPos,
+	ratioForIndex, releaseGraphPointer, urlFor,
 } from "./lib/editor.js";
 
 const NODE_TYPE = "TI_BboxCropManual";
@@ -96,8 +96,14 @@ function hitTest(node, cx, cy) {
 	for (const [name, [px, py]] of Object.entries(corners)) {
 		if (Math.hypot(cx - px, cy - py) <= HANDLE_HIT) return name;
 	}
-	const nearL = Math.abs(cx - x0) <= HANDLE_HIT, nearR = Math.abs(cx - x1) <= HANDLE_HIT;
-	const nearT = Math.abs(cy - y0) <= HANDLE_HIT, nearB = Math.abs(cy - y1) <= HANDLE_HIT;
+	// Reach HANDLE_HIT OUTSIDE the edge, but only a third of the box INWARD, so a
+	// small box always keeps a central zone for moving instead of resizing.
+	const inMx = Math.min(HANDLE_HIT, (x1 - x0) / 3);
+	const inMy = Math.min(HANDLE_HIT, (y1 - y0) / 3);
+	const nearL = cx >= x0 - HANDLE_HIT && cx <= x0 + inMx;
+	const nearR = cx <= x1 + HANDLE_HIT && cx >= x1 - inMx;
+	const nearT = cy >= y0 - HANDLE_HIT && cy <= y0 + inMy;
+	const nearB = cy <= y1 + HANDLE_HIT && cy >= y1 - inMy;
 	const inYs = cy >= y0 - HANDLE_HIT && cy <= y1 + HANDLE_HIT;
 	const inXs = cx >= x0 - HANDLE_HIT && cx <= x1 + HANDLE_HIT;
 	if (nearL && inYs) return "w";
@@ -133,7 +139,8 @@ function applyDrag(node, grip, sx, sy) {
 	if (grip.includes("n")) top = Math.min(sy, bottom - MIN_BOX);
 	if (grip.includes("s")) bottom = Math.max(sy, top + MIN_BOX);
 	let box = { x: left, y: top, w: right - left, h: bottom - top };
-	box = constrainToRatio(box, grip, parseRatio(getWidget(node, "aspect_ratio")?.value));
+	// One box, so the first ratio in the list applies.
+	box = constrainToRatio(box, grip, ratioForIndex(parseRatios(getWidget(node, "aspect_ratio")?.value), 0));
 	writeBox(node, box);
 }
 

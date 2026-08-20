@@ -14,10 +14,12 @@
 import { app } from "../../scripts/app.js";
 import {
 	clamp, colorForId, constrainToRatio, fillNodeWidth, getWidget, hideWidget,
-	parseRatio, pointerPos, releaseGraphPointer, urlFor,
+	parseRatios, pointerPos, ratioForIndex, releaseGraphPointer, urlFor,
 } from "./lib/editor.js";
 
-const ratioOf = (node) => parseRatio(getWidget(node, "aspect_ratio")?.value);
+// Per-box ratios: box i uses the i-th ratio in the comma-separated list (or the
+// last, so one ratio applies to every box).
+const ratiosOf = (node) => parseRatios(getWidget(node, "aspect_ratio")?.value);
 
 const NODE_TYPE = "TI_BboxCropMulti";
 const HANDLE_HIT = 12;
@@ -67,8 +69,14 @@ function hitTest(node, cx, cy) {
 		for (const [name, [px, py]] of Object.entries(corners)) {
 			if (Math.hypot(cx - px, cy - py) <= HANDLE_HIT) return { i, grip: name };
 		}
-		const nearL = Math.abs(cx - x0) <= HANDLE_HIT, nearR = Math.abs(cx - x1) <= HANDLE_HIT;
-		const nearT = Math.abs(cy - y0) <= HANDLE_HIT, nearB = Math.abs(cy - y1) <= HANDLE_HIT;
+		// Reach HANDLE_HIT OUTSIDE the edge, but only a third of the box INWARD, so
+		// a small box always keeps a central zone for moving instead of resizing.
+		const inMx = Math.min(HANDLE_HIT, (x1 - x0) / 3);
+		const inMy = Math.min(HANDLE_HIT, (y1 - y0) / 3);
+		const nearL = cx >= x0 - HANDLE_HIT && cx <= x0 + inMx;
+		const nearR = cx <= x1 + HANDLE_HIT && cx >= x1 - inMx;
+		const nearT = cy >= y0 - HANDLE_HIT && cy <= y0 + inMy;
+		const nearB = cy <= y1 + HANDLE_HIT && cy >= y1 - inMy;
 		const inYs = cy >= y0 - HANDLE_HIT && cy <= y1 + HANDLE_HIT;
 		const inXs = cx >= x0 - HANDLE_HIT && cx <= x1 + HANDLE_HIT;
 		if (nearL && inYs) return { i, grip: "w" };
@@ -102,7 +110,8 @@ function applyDrag(node, sx, sy) {
 	if (d.grip.includes("n")) top = Math.min(sy, bottom - MIN_BOX);
 	if (d.grip.includes("s")) bottom = Math.max(sy, top + MIN_BOX);
 	const box = constrainToRatio(
-		{ x: left, y: top, w: right - left, h: bottom - top }, d.grip, ratioOf(node));
+		{ x: left, y: top, w: right - left, h: bottom - top }, d.grip,
+		ratioForIndex(ratiosOf(node), d.i));
 	b.x = box.x; b.y = box.y; b.w = box.w; b.h = box.h;
 }
 
@@ -277,7 +286,7 @@ function setupEditor(node) {
 			const c = node._ti.creating;
 			c.w = Math.abs(sx - c._sx); c.h = Math.abs(sy - c._sy);
 			c.x = Math.min(sx, c._sx); c.y = Math.min(sy, c._sy);
-			const r = ratioOf(node);
+			const r = ratioForIndex(ratiosOf(node), node._ti.boxes.length);
 			if (r) {                       // grow from the start corner, ratio-locked
 				const nw = Math.max(c.w, c.h * r);
 				c.w = nw; c.h = nw / r;

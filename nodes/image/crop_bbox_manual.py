@@ -126,7 +126,8 @@ class BboxCropManual(TiNode):
 							   "(8 for most latent models). 0 or 1 = off."}),
 				"aspect_ratio": ("STRING", {"default": "", "tooltip":
 					"Lock the box to this aspect ratio while dragging its handles "
-					"(e.g. 16:9, 4:3, 1.5). Empty = free. Moving is always free."}),
+					"(e.g. 16:9, 4:3, 1.5). A comma-separated list is allowed; the "
+					"first value is used here. Empty = free. Moving is always free."}),
 			},
 		}
 
@@ -268,8 +269,11 @@ class BboxCropMulti(TiNode):
 					"tooltip": "Round each crop size down to a multiple (8 for most "
 							   "latent models). 0 or 1 = off."}),
 				"aspect_ratio": ("STRING", {"default": "", "tooltip":
-					"Lock every box to this aspect ratio while dragging its handles "
-					"(e.g. 16:9, 4:3, 1.5). Empty = free. Moving is always free."}),
+					"Lock boxes to an aspect ratio while dragging their handles. One "
+					"value locks all boxes (e.g. 16:9); a comma-separated list gives "
+					"each box its own — box 0 = first ratio, box 1 = second, … extra "
+					"boxes reuse the last (16:9, 1:1, 4:3). Empty = free. Moving is "
+					"always free."}),
 			},
 		}
 
