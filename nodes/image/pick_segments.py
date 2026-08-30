@@ -55,6 +55,47 @@ def color_for_id(seg_id: int):
 	return r, g, b
 
 
+def grow_segment(seg, amount, H, W):
+	"""One segment with its mask dilated (amount > 0) or eroded (amount < 0).
+
+	Growing has to move the BBOX too, or the extra pixels would have nowhere to
+	live — so the box is expanded by the same margin (clamped to the frame) and
+	the mask is dilated inside it. Max-pooling is dilation for a 0/1 mask, and
+	the same pool on the inverse is erosion; both are a few ops on a small crop,
+	no scipy needed.
+	"""
+	import torch.nn.functional as F  # noqa: PLC0415
+
+	g = int(amount)
+	if g == 0:
+		return seg
+	x0, y0, x1, y1 = seg["bbox"]
+	m = seg["mask"].to(torch.float32)
+	if g > 0:
+		nx0, ny0 = max(0, x0 - g), max(0, y0 - g)
+		nx1, ny1 = min(W, x1 + g), min(H, y1 + g)
+		canvas = torch.zeros((ny1 - ny0, nx1 - nx0), dtype=torch.float32)
+		canvas[y0 - ny0:y0 - ny0 + (y1 - y0), x0 - nx0:x0 - nx0 + (x1 - x0)] = m
+		out = F.max_pool2d(canvas[None, None], kernel_size=2 * g + 1, stride=1, padding=g)[0, 0]
+	else:
+		g = -g
+		nx0, ny0, nx1, ny1 = x0, y0, x1, y1
+		# Erode = dilate the INVERSE. The border has to be padded with 1s (i.e.
+		# background in inverse space) by hand: max_pool's own padding is -inf,
+		# which would treat everything outside as foreground and leave a mask
+		# that fills its bbox completely un-eroded.
+		inv = 1.0 - m
+		bh, bw = inv.shape
+		canvas = torch.ones((bh + 2 * g, bw + 2 * g), dtype=torch.float32)
+		canvas[g:g + bh, g:g + bw] = inv
+		out = 1.0 - F.max_pool2d(canvas[None, None], kernel_size=2 * g + 1,
+								 stride=1, padding=0)[0, 0]
+	new = dict(seg)
+	new["bbox"] = [nx0, ny0, nx1, ny1]
+	new["mask"] = (out > 0.5).to(torch.uint8)
+	return new
+
+
 def prune_asset_cache(root: str, keep: str, max_dirs: int = _MAX_CACHED_INPUTS) -> int:
 	"""Keep the `max_dirs` most recent editor-asset folders under `root`.
 
@@ -140,6 +181,11 @@ class PickSegments(TiNode):
 				"current_frame": ("INT", {"default": 0, "min": 0, "max": 999999}),
 				"overlay_alpha": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
 					"tooltip": "Opacity of the colorized segments in the image output."}),
+				# APPENDED last on purpose: widget values are positional, so a new
+				# widget in the middle shifts every value after it in saved graphs.
+				# {"sig": ..., "grow": {"<id>": px}} — per-object grow/shrink, set
+				# with the editor's +/- buttons on the ctrl-clicked selection.
+				"grow_ids": ("STRING", {"default": "{}"}),
 			},
 		}
 
@@ -176,7 +222,30 @@ class PickSegments(TiNode):
 		ids = data.get("ids")
 		return set(ids) if isinstance(ids, list) else set()
 
-	def execute(self, image, segments, excluded_ids="[]", current_frame=0, overlay_alpha=0.5):
+	@staticmethod
+	def _grow_map(raw, sig):
+		"""{id: pixels} from the grow widget, ignoring another input's values."""
+		try:
+			data = json.loads(raw) if raw else {}
+		except (ValueError, TypeError):
+			return {}
+		if not isinstance(data, dict):
+			return {}
+		if data.get("sig") is not None and data.get("sig") != sig:
+			return {}
+		grow = data.get("grow")
+		if not isinstance(grow, dict):
+			return {}
+		out = {}
+		for k, v in grow.items():
+			try:
+				out[int(k)] = int(v)
+			except (TypeError, ValueError):
+				continue
+		return out
+
+	def execute(self, image, segments, excluded_ids="[]", current_frame=0,
+				overlay_alpha=0.5, grow_ids="{}"):
 		validate_segments(segments)
 		imgs = image if image.dim() == 4 else image.unsqueeze(0)  # [N,H,W,3]
 		H = int(segments.get("height", imgs.shape[1]))
@@ -189,9 +258,18 @@ class PickSegments(TiNode):
 		# must not silently drop objects in the new one.
 		sig = f"{_seg_signature(segments)}_{_img_signature(imgs)}"
 		excluded = self._excluded_ids(excluded_ids, sig)
+		grow = self._grow_map(grow_ids, sig)
 
+		# Every output — mask, overlay, filtered segments, bbox_mask — is built
+		# from this, so growing here reaches all of them consistently.
 		def included(frame):
-			return [s for s in frame if s["id"] not in excluded]
+			out = []
+			for s in frame:
+				if s["id"] in excluded:
+					continue
+				g = grow.get(s["id"], 0)
+				out.append(grow_segment(s, g, H, W) if g else s)
+			return out
 
 		# Match the image batch length to the segment frame count where possible.
 		if imgs.shape[0] != N and imgs.shape[0] == 1:
