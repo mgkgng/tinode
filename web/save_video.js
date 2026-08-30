@@ -1,4 +1,5 @@
-// Preview for "Save Video · Combine (ti)".
+// Video preview for the nodes that write a clip — "Save Video · Combine (ti)"
+// and "Save Filled (ti)".
 //
 // ComfyUI renders image previews natively but not video, so on execution the
 // node hands us {filename, subfolder, type, format} via ui.ti_video and we mount
@@ -7,7 +8,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-const NODE_TYPE = "TI_SaveVideo";
+const NODE_TYPES = new Set(["TI_SaveVideo", "TI_SaveFilled"]);
 
 function urlFor(info) {
 	return api.apiURL(
@@ -54,7 +55,7 @@ function show(node, info) {
 app.registerExtension({
 	name: "tinode.saveVideo",
 	async beforeRegisterNodeDef(nodeType, nodeData) {
-		if (nodeData.name !== NODE_TYPE) return;
+		if (!NODE_TYPES.has(nodeData.name)) return;
 
 		const onNodeCreated = nodeType.prototype.onNodeCreated;
 		nodeType.prototype.onNodeCreated = function () {

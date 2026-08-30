@@ -28,6 +28,27 @@ from ...registry import register
 from ...schema import validate_crop_xform
 from . import _mask_store as store
 
+# What has to be unchanged for an existing render to still describe this crop.
+FILL_IDENTITY = ("crop_width", "crop_height", "frame_start", "frame_end",
+				 "frame_count")
+
+
+def fill_keys_to_carry(prev, manifest):
+	"""(carry, stale) — which fill flags survive a re-save of this crop.
+
+	Re-saving the SAME crop must keep its renders: the filled/ folders are still
+	on disk, and dropping the flags makes Load Clips call a finished clip "not
+	ready". But re-AUTHORING it — a different box, or a different stretch of the
+	clip — leaves a fill of the old pixels behind, and a flag saying it is
+	current turns phase 2b into a size mismatch, or a silent paste of another
+	take. So the flags travel only while the crop's identity is unchanged.
+	"""
+	stale = [k for k, v in prev.items()
+			 if k.startswith(("has_filled", "filled_frames")) and v]
+	if all(prev.get(k) == manifest.get(k) for k in FILL_IDENTITY):
+		return stale, []
+	return [], stale
+
 
 @register
 class SaveMasks(TiNode):
@@ -74,6 +95,13 @@ class SaveMasks(TiNode):
 							   "Chunk Item). Phase 2 pastes the result back here."}),
 				"frame_end": ("INT", {"default": 0, "min": 0, "max": 9999999, "step": 1,
 					"tooltip": "End frame (exclusive) of this chunk in the original."}),
+				# APPENDED last: widget values are positional in saved graphs.
+				"source_every_nth": ("INT", {"default": 1, "min": 1, "max": 10, "step": 1,
+					"tooltip": "Set to the select_every_nth used at Load Video when "
+							   "authoring from a REDUCED-rate clip (2 = the store "
+							   "holds every 2nd source frame). The loaders then "
+							   "never stride this crop again — the double-speed "
+							   "guard."}),
 			},
 		}
 
@@ -87,7 +115,7 @@ class SaveMasks(TiNode):
 	def execute(self, mask, crop_info, stem, crop_index=0, crop_image=None,
 				positive_prompt="", negative_prompt="", source_path="", fps=0.0,
 				subdir=store.DEFAULT_SUBDIR, crop_bit_depth="16", overwrite=True,
-				chunk_index=-1, frame_start=0, frame_end=0):
+				chunk_index=-1, frame_start=0, frame_end=0, source_every_nth=1):
 		import numpy as np  # noqa: PLC0415
 		from PIL import Image  # noqa: PLC0415
 
@@ -168,7 +196,29 @@ class SaveMasks(TiNode):
 			"has_filled": False,
 			"filled_subfolder": store.FILLED_SUBFOLDER,
 			"filled_pattern": store.FILLED_PATTERN,
+			"source_every_nth": max(1, int(first(source_every_nth, 1))),
 		}
+		# Re-saving a crop's mask must NOT forget its renders: the filled/
+		# folders are still on disk, and losing the flags makes Load Clips call
+		# a finished clip "not ready". Carry every fill-related key forward —
+		# but ONLY while the crop is still the same crop. Re-authoring it with a
+		# different box or a different stretch of the clip leaves a fill of the
+		# OLD pixels behind, and a flag that says it is current turns phase 2b
+		# into a size mismatch (or worse, a silent paste of another take).
+		try:
+			prev = store.read_manifest(idir)
+			carry, stale = fill_keys_to_carry(prev, manifest)
+			for key in carry:
+				manifest[key] = prev[key]
+			if stale:
+				print(f"[tinode] Save Crop & Mask: {stem!r} crop {crop_index} was "
+					  f"re-authored ({prev.get('crop_width')}x{prev.get('crop_height')} "
+					  f"frames {prev.get('frame_start')}-{prev.get('frame_end')} -> "
+					  f"{cw}x{ch} frames {fstart}-{fend}) — its existing fill is of the "
+					  f"OLD crop and is now marked NOT rendered. Delete "
+					  f"{store.filled_dir(idir)} and run phase 2a again.")
+		except Exception:  # noqa: BLE001 — first save: nothing to carry
+			pass
 		store.write_manifest(idir, manifest)
 		extra = f" + {crop_bits}-bit crops" if crop_saved else ""
 		where = f"chunk {chunk} crop {crop_index}" if chunk is not None else f"crop {crop_index}"

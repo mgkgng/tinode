@@ -115,6 +115,13 @@ class LoadMasks(TiNode):
 				"only_unfilled": ("BOOLEAN", {"default": False, "tooltip":
 					"Skip crops that already have a filled/ result, so a resumed "
 					"batch continues where it stopped instead of redoing work."}),
+				# APPENDED last: widget values are positional in saved graphs.
+				"every_nth": ("INT", {"default": 1, "min": 1, "max": 10, "step": 1,
+					"tooltip": "Work at reduced rate: 2 = every 2nd frame (25fps "
+							   "from 50fps masks) on ONE global grid across chunks. "
+							   "Stamped into every item, so Load Mask / Load Cropped "
+							   "Frames stride identically from this single switch. "
+							   "The store's masks stay full-rate."}),
 			},
 		}
 
@@ -141,7 +148,7 @@ class LoadMasks(TiNode):
 			return repr(exc)
 
 	def execute(self, subdir=store.DEFAULT_SUBDIR, source_dir="", stems="",
-				only_unfilled=False):
+				only_unfilled=False, every_nth=1):
 		root = store.output_root(subdir)
 		src = _abs_source_dir(source_dir)
 		found = store.scan_items(root)
@@ -151,6 +158,9 @@ class LoadMasks(TiNode):
 			it["source_path"] = resolve_source(
 				it.get("source_path", ""), it.get("stem", ""), src) or ""
 
+		nth = max(1, int(first(every_nth, 1)))
+		for it in found:
+			it["every_nth"] = nth              # ONE switch drives every loader
 		items = [it for it in found if match_stem(it.get("stem", ""), stems)]
 		if bool(first(only_unfilled, False)):
 			items = [it for it in items if not it.get("has_filled")]
@@ -219,12 +229,19 @@ class LoadMask(TiNode):
 				"Load Mask: ComfyUI's native VIDEO API (comfy_api.latest) is unavailable.")
 
 		n = int(item.get("frame_count", 0))
-		mask = store.load_mask_sequence(item["mask_dir"], item.get("mask_pattern", store.MASK_PATTERN), n)
 		fstart = int(item.get("frame_start", 0))
+		nth = max(1, int(item.get("every_nth", 1)))
+		# A pre-strided store (source_every_nth) is never strided again.
+		nth = max(1, nth // max(1, int(item.get("source_every_nth", 1))))
+		idx = store.stride_indices(fstart, n, nth) if nth > 1 else None
+		mask = store.load_mask_sequence(item["mask_dir"], item.get("mask_pattern", store.MASK_PATTERN),
+									 n, indices=idx)
+		if nth > 1:
+			print(f"[tinode] Load Mask: half-rate x{nth} — {mask.shape[0]} of {n} frame(s).")
 		return (
 			VideoFromFile(source_path), mask, item["crop_info"], stem,
 			str(item.get("positive_prompt", "")), str(item.get("negative_prompt", "")),
-			int(item.get("crop_index", 0)), n or mask.shape[0],
+			int(item.get("crop_index", 0)), int(mask.shape[0]),
 			fstart, int(item.get("frame_end", fstart + (n or mask.shape[0]))),
 			int(item.get("chunk_index", -1)),
 		)
@@ -259,9 +276,12 @@ class LoadCroppedFrames(TiNode):
 				f"{item.get('crop_index','?')} has no exported crops. Connect "
 				"crop_image on Save Crop & Mask, or rebuild with Crop By Info.")
 		n = int(item.get("frame_count", 0))
+		nth = max(1, int(item.get("every_nth", 1)))
+		nth = max(1, nth // max(1, int(item.get("source_every_nth", 1))))
+		idx = store.stride_indices(int(item.get("frame_start", 0)), n, nth) if nth > 1 else None
 		crops = store.load_rgb_sequence(
-			item["crop_dir"], item.get("crop_pattern", store.CROP_PATTERN), n)
-		return (crops, n)
+			item["crop_dir"], item.get("crop_pattern", store.CROP_PATTERN), n, indices=idx)
+		return (crops, int(crops.shape[0]))
 
 
 @register
@@ -290,8 +310,8 @@ class LoadChunkContext(TiNode):
 	RETURN_NAMES = ("context", "found", "chunk_index")
 	OUTPUT_TOOLTIPS = (
 		"The previous chunk's last frames — wire to Frame Pad's context_images. "
-		"For the FIRST chunk there is no previous one, so this is a single black "
-		"frame and `found` is false; leave Frame Pad to repeat frame 0 there.",
+		"For the FIRST chunk there is no previous one, so this is empty and Frame "
+		"Pad falls back to repeating frame 0 on its own.",
 		"Whether a previous chunk was actually found and loaded.",
 		"The chunk index this context came from (-1 if none).",
 	)
@@ -307,9 +327,10 @@ class LoadChunkContext(TiNode):
 			raise RuntimeError("Load Chunk Context: `item` must come from Load Masks.")
 		variant = str(first(variant, "") or "").strip()
 		chunk = int(it.get("chunk_index", -1))
-		h = int(it.get("crop_height", 8)) or 8
-		w = int(it.get("crop_width", 8)) or 8
-		none = (torch.zeros((1, h, w, 3), dtype=torch.float32), False, -1)
+		# "No context" must be None, not a black frame: Frame Pad uses ANY tensor
+		# wired into context_images, so a placeholder image would pad the first
+		# chunk with black. None makes it fall back to the frame-0 freeze.
+		none = (None, False, -1)
 		if chunk <= 0:
 			return none              # first chunk (or unchunked): nothing precedes it
 
@@ -325,7 +346,9 @@ class LoadChunkContext(TiNode):
 				  "process the chunks in order.")
 			return none
 
-		n = int(man.get("frame_count", 0))
+		# The fill's own recorded length, NOT the crop's: half-rate fills hold
+		# every 2nd frame, and assuming frame_count would read missing files.
+		n = int(man.get(store.filled_frames_key(variant), man.get("frame_count", 0)))
 		want = min(int(first(frames, 16)), n)
 		seq = store.load_rgb_sequence(
 			store.filled_dir(prev, variant), man.get("filled_pattern", store.FILLED_PATTERN), n)

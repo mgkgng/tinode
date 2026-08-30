@@ -88,6 +88,29 @@ def filled_flag(variant=""):
 	return "has_filled" if not v else f"has_filled_{_safe(v)}"
 
 
+def filled_frames_key(variant=""):
+	"""Manifest key recording how many frames that variant's fill actually has.
+
+	The fill can be shorter than the crop (half-rate mode renders every 2nd
+	frame), so its length must be recorded rather than assumed from frame_count.
+	"""
+	v = str(variant or "").strip()
+	return "filled_frames" if not v else f"filled_frames_{_safe(v)}"
+
+
+def stride_indices(frame_start, frame_count, every_nth):
+	"""Local frame indices to keep so the kept frames sit on the GLOBAL grid.
+
+	Half-rate work must keep source-global indices divisible by every_nth —
+	per-chunk striding from each chunk's own 0 would drift off the grid whenever
+	a chunk starts on an odd frame, and the fills would land between the frames
+	the composite decodes. Global index of local i is frame_start + i.
+	"""
+	s = int(frame_start)
+	n = max(1, int(every_nth))
+	return [i for i in range(int(frame_count)) if (s + i) % n == 0]
+
+
 def write_manifest(idir, manifest):
 	os.makedirs(idir, exist_ok=True)
 	with open(manifest_path(idir), "w", encoding="utf-8") as fh:
@@ -144,13 +167,17 @@ def save_rgb_sequence(imgs, out_dir, pattern, bit_depth):
 	return n
 
 
-def load_rgb_sequence(in_dir, pattern, frame_count):
-	"""Load a PNG sequence back to an [N,H,W,3] float tensor (0..1), 8- or 16-bit."""
+def load_rgb_sequence(in_dir, pattern, frame_count, indices=None):
+	"""Load a PNG sequence back to an [N,H,W,3] float tensor (0..1), 8- or 16-bit.
+
+	`indices` loads only those frame numbers, in that order — the half-rate path
+	— instead of 0..frame_count-1.
+	"""
 	import numpy as np  # noqa: PLC0415
 	import torch  # noqa: PLC0415
 
 	frames = []
-	for i in range(int(frame_count)):
+	for i in (indices if indices is not None else range(int(frame_count))):
 		p = os.path.join(in_dir, pattern % i)
 		if not os.path.isfile(p):
 			raise RuntimeError(f"missing frame {p}")
@@ -170,14 +197,17 @@ def load_rgb_sequence(in_dir, pattern, frame_count):
 	return torch.from_numpy(np.stack(frames))
 
 
-def load_mask_sequence(in_dir, pattern, frame_count):
-	"""Load a mask PNG sequence into a [frames, H, W] float tensor (0..1)."""
+def load_mask_sequence(in_dir, pattern, frame_count, indices=None):
+	"""Load a mask PNG sequence into a [frames, H, W] float tensor (0..1).
+
+	`indices` loads only those frame numbers, in that order (half-rate path).
+	"""
 	import numpy as np  # noqa: PLC0415
 	from PIL import Image  # noqa: PLC0415
 	import torch  # noqa: PLC0415
 
 	frames = []
-	for i in range(int(frame_count)):
+	for i in (indices if indices is not None else range(int(frame_count))):
 		p = os.path.join(in_dir, pattern % i)
 		if not os.path.isfile(p):
 			raise RuntimeError(f"missing mask frame {p}")
