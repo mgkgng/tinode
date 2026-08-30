@@ -90,6 +90,7 @@ against, so it is never silently re-applied to a different clip.
 | **Bbox Crop · Manual** | Interactive crop (above). |
 | **Crop By Info** | Re-cut the exact crop a saved `crop_info` describes (the forward of Paste Back) — a native-scale slice, bit-exact, no coords to re-enter. Rejects rescaled crop_info rather than resample. |
 | **Mask Crop Paste Back** | Composite processed crops back using `crop_info`. Blends through an optional mask, `gaussian`/`box` feathered; **bit-exact outside the mask**, and no resample when the crop isn't rescaled. |
+| **Image Preview · Ephemeral** | Look at an image (or step through a batch) without saving it — held in **RAM only**, no PNG in `temp/`, no queue-history entry. A **DOWNLOAD** button writes png / tiff / jpg / webp to your machine, one frame or the whole batch as a zip. png and tiff are bit-exact at the master's own bit depth. Passes `images` through. |
 
 > **The one rule for Paste Back:** its `image` must be the **original frame the
 > crop node consumed**, never the crop node's output. `crop_info` coordinates
@@ -127,6 +128,7 @@ makes the node a **no-op** rather than silently selecting the wrong frames.
 | **Load Video** | Decode a file from `input/` to an IMAGE batch via ffmpeg (frame cap / skip / every-nth / force-rate / resize). Faithful colour by default; `force_full_range` fixes a mis-tagged clip. Outputs images, frame count, fps, plus **`stem` / `path` / `video`** — the same handles Load Videos gives, so one clip can drive the per-clip store. `video` is the whole untouched file, so it only matches `images` at default frame-selection settings (the node says so when it doesn't). |
 | **Load Videos** | Gather many clips from a folder as an Inspire `ITEM_LIST` of **lazy** native `VIDEO`s, to loop over one at a time. `directory` is relative to `input/` or an absolute path; `pattern` filters by wildcard (`*.mp4`, `PROJECT_AMIR_*`); `filenames` (one per line, exact or wildcard) picks an exact set. Outputs `item_list`, a per-clip `videos` list, and `count`. |
 | **Save Video · Combine** | Encode an IMAGE batch to mp4 / webm / lossless PNG frames via ffmpeg, with the colour controls (`color_range`, `colorspace`, `pix_fmt`, `crf`) that keep a grade intact. Previews in the node. |
+| **Video Preview · Ephemeral** | Watch a clip without saving it. Holds the frames in **RAM only** — nothing in `output/`, nothing in `temp/`, nothing in the queue history — streams a proxy into a `<video>` in the node body, and a **CREATE VIDEO** button encodes on demand and downloads to your machine. Optional `audio` plays with it and is muxed into every download, fitted to the picture's length. Passes `images` / `audio` straight through, so it can sit mid-chain as a monitor. |
 | **Video Source Path** | The file a native `VIDEO` was loaded from → `stem` / `filename` / `path`. Keys a clip's saved artifacts inside a Foreach loop. |
 | **Save Crop & Mask** | Phase 1 of batch removal: write a clip's mask (lossless PNG, crop space) + its `crop_info` + a manifest, keyed by `stem`, under `output/<subdir>/`. Optionally also exports the **cropped RGB frames** as a lossless PNG sequence (`crop_image`, 16- or 8-bit) so the removal step — even an external tool — works on the exact pixels. The source video is never re-encoded. |
 | **Load Masks** | Phase 2: scan the mask store → an Inspire `ITEM_LIST`, one item per clip. `source_dir` re-locates moved footage. |
@@ -311,6 +313,89 @@ Bottom line: get the *fill* right (a temporally-aware video inpainter) and a
 feathered alpha composite is professional-grade. The blend is not where 4K
 quality is won or lost — the inpainter and staying lossless are.
 
+#### Video Preview — look at it without keeping it
+
+Save Video writes a file: it lands in `output/`, shows up in the queue history,
+and after an afternoon of iterating there are two hundred to sort through. Most
+of those runs you only wanted to *look* at.
+
+Video Preview plays the clip and stores nothing.
+
+- The frames are held in a **process-global RAM store**, keyed per node: re-queue
+  and the node's previous clip is replaced, not stacked. Restart ComfyUI and every
+  trace is gone.
+- What you watch is a small **h264 proxy** (default 720p long side), streamed from
+  RAM with HTTP Range support so the scrub bar works.
+- **CREATE VIDEO** re-encodes from the untouched master and hands the bytes
+  straight to the browser download. The server never keeps a copy.
+- The **✕** button releases the clip immediately; deleting the node does too;
+  otherwise it expires after `hold_minutes` (default 30).
+
+Download formats, and what each one costs you:
+
+| Format | Fidelity |
+|---|---|
+| `mkv · ffv1` | **Bit-exact.** RGB in, RGB out — no matrix, no subsampling. 8- or 16-bit. |
+| `zip · png frames` | **Bit-exact.** One lossless PNG per frame, 8- or 16-bit, numbered from `00000`. |
+| `mov · prores 4444` | 10-bit 4:4:4, visually lossless on real footage, but still a lossy DCT codec. |
+| `mp4 · h264`, `webm · vp9` | Lossy delivery. `crf`, chroma and range are exposed. |
+
+**Audio** is optional and rides along everywhere: you hear it in the node, and
+every download muxes it. The lossless formats carry it losslessly too — float PCM
+in mkv, a float WAV beside the frames in the png zip — so "bit-exact" covers the
+whole file. mp4 gets AAC 320k, webm Opus 192k, mov 24-bit PCM.
+
+The track is fitted to the picture in **samples**: padded with silence if it ran
+short, cut if it ran long. The first attempt used ffmpeg's `-shortest`, which cuts
+at the last video packet's timestamp — the *start* of the final frame — and left
+the track up to one frame-duration short (19 ms measured), by a different amount
+per container. Video timing is the thing that must not move, so the fit is exact
+now and `test_video_preview_fits_the_track_to_the_picture` pins it.
+
+The player starts muted, because browsers refuse to autoplay with sound. Unmute
+once and the choice is remembered — by then the page has had a user gesture, so
+later runs come back with sound.
+
+`precision` decides what the held master keeps. **auto** checks whether the
+values already sit on the 1/255 grid: a clip straight off Load Video does, and is
+held at 8 bits; anything that has been through a blend, a resize or a colour match
+carries genuine sub-8-bit detail and is held at **16 bits, which doubles the RAM**.
+Force it either way if you would rather have the memory back. The ceiling across
+all held clips is 8 GB — change it with `TINODE_PREVIEW_RAM_MB` (in megabytes),
+which is read once at import, so it needs a ComfyUI restart.
+
+The one caveat on "never touches the disk": the mp4 and mov muxers rewrite their
+header at the end, so those two encode via a private `tempfile` directory that is
+deleted before the response is sent. A fragmented stream handed to an editor is a
+worse problem than a file that exists for half a second outside ComfyUI's tree.
+mkv, webm and the PNG zip never leave RAM — including with audio, which goes down
+a second anonymous pipe (`pipe:<fd>`) rather than a scratch file, since two piped
+inputs need two file descriptors.
+
+#### Image Preview — the same bargain, for stills
+
+ComfyUI's Preview Image writes a PNG into `temp/` and Save Image writes one into
+`output/`; both leave a file and a queue-history entry for every run. Image
+Preview holds the batch in RAM, encodes each frame on demand for the view, and
+only writes something when you press **DOWNLOAD** — to your machine, not the
+server's. Batches get ‹ › arrows and a scrubber, and the download is either the
+frame on screen or all of them as a zip.
+
+| Format | Fidelity |
+|---|---|
+| `png` | **Bit-exact**, at the master's own depth — 16-bit in, 16-bit PNG out. |
+| `tiff` | **Bit-exact**, LZW, 8- or 16-bit. For a compositing handoff. |
+| `jpg`, `webp` | Lossy, with a quality knob. webp at 100 is lossless. |
+
+The on-screen view is a downscaled jpg (long side 1600) so a 4K batch steps
+instantly; a download always asks for the frame at full size and full depth.
+
+One trap worth knowing: **PIL cannot read a 16-bit RGB PNG.** It has no 48-bit
+RGB mode and hands back `uint8` without complaining, so a "check" of a 16-bit
+export through Pillow will silently measure nothing. Use ffmpeg or OpenCV. The
+regression test pins this, because it first made a bit-exactness test pass for
+the wrong reason.
+
 #### Video colour
 
 A graded clip can look flat or wrong after a decode/encode round trip. The pixels
@@ -333,6 +418,16 @@ YUV↔RGB conversion. Two rules:
   `colorspace` to **match your source** (`ffprobe` it), so a player interprets the
   file the way it was graded. For a lossless intermediate, save **PNG frames**
   (no colour conversion, no compression) and mux to video yourself.
+- **The tags are not the conversion.** ffmpeg's `-colorspace` / `-color_range`
+  only *label* the file; its implicit RGB→YUV conversion is BT.601 limited no
+  matter what you label it. Encoding at the usual bt709 + tv therefore converted
+  as 601 and labelled 709, and any player that trusted the label undid a matrix
+  that was never applied — measured at up to **32/255 out, mean 5.9**, on a
+  gradient. `_video_io.colour_flags()` now emits the matching `scale` filter
+  alongside the tags, which brings the same round trip to 2/255 at 4:4:4 (matrix
+  rounding) and ~5/255 at 4:2:0 (chroma subsampling, irreducible). This affected
+  **Save Video · Combine at its defaults**; `test_colour_flags_convert_as_well_as_tag`
+  and `test_encode_round_trips_within_its_own_colour_tags` pin it.
 
 ### `tinode/data`
 | Node | Does |

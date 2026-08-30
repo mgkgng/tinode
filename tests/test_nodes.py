@@ -16,6 +16,7 @@ Needs torch, so run it with ComfyUI's interpreter, e.g.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -57,6 +58,10 @@ from tinode.nodes.image.load_videos import resolve_dir, resolve_video_files  # n
 from tinode.nodes.image.crop_apply import CropByInfo  # noqa: E402
 from tinode.nodes.image.video_source_path import video_source_path  # noqa: E402
 from tinode.nodes.image import _mask_store as _mstore  # noqa: E402
+from tinode.nodes.image import _preview_store as _pstore  # noqa: E402
+from tinode.nodes.image._video_io import colour_flags, encode as _vio_encode, ffmpeg_exe  # noqa: E402
+from tinode.nodes.image.video_preview import VideoPreview  # noqa: E402
+from tinode.nodes.image.image_preview import ImagePreview  # noqa: E402
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -600,6 +605,663 @@ def test_schema_validators_reject_junk():
 
 
 # --------------------------------------------------------- segment pipeline
+def test_half_rate_stride_stays_on_the_global_grid():
+	# The core invariant: every chunk keeps SOURCE-global indices % n == 0, so
+	# fills from chunks starting on odd frames still land on the frames the
+	# composite decodes.
+	assert _mstore.stride_indices(0, 10, 2) == [0, 2, 4, 6, 8]
+	assert _mstore.stride_indices(5, 10, 2) == [1, 3, 5, 7, 9]     # globals 6,8,10,12,14
+	assert _mstore.stride_indices(5, 10, 1) == list(range(10))     # nth=1 = everything
+	# consecutive chunks tile the kept timeline with no gap and no overlap
+	a, b = _mstore.stride_indices(0, 7, 2), _mstore.stride_indices(7, 8, 2)
+	kept = [0 + i for i in a] + [7 + i for i in b]
+	assert kept == [0, 2, 4, 6, 8, 10, 12, 14]
+	# the kept-timeline start used by Load Clip Fills: ceil(start / n)
+	for s, n_, want in ((0, 2, 0), (5, 2, 3), (7, 2, 4), (8, 2, 4)):
+		assert (s + (-s % n_)) // n_ == want, (s, n_)
+
+
+def test_half_rate_loaders_and_frame_stride():
+	import numpy as np
+	from PIL import Image
+	from tinode.nodes.image.frame_stride import FrameStride
+
+	with tempfile.TemporaryDirectory() as d:
+		# a 10-frame mask sequence where frame i is filled with i/10
+		for i in range(10):
+			Image.fromarray(np.full((4, 6), i * 10, dtype=np.uint8), mode="L").save(
+				os.path.join(d, _mstore.MASK_PATTERN % i))
+		idx = _mstore.stride_indices(5, 10, 2)
+		m = _mstore.load_mask_sequence(d, _mstore.MASK_PATTERN, 10, indices=idx)
+		assert m.shape[0] == 5
+		assert abs(m[0].max().item() - 10 / 255) < 1e-6     # frame 1, not frame 0
+
+	# Frame Stride: kept frames are bit-exact, fps divides, mask in lockstep
+	img = torch.rand(10, 4, 6, 3)
+	mask = torch.rand(10, 4, 6)
+	out, mo, n, fps = FrameStride().execute(img, every_nth=2, mask=mask, fps=50.0)
+	assert n == 5 and fps == 25.0
+	assert torch.equal(out, img[0::2]) and torch.equal(mo, mask[0::2])
+	out, _m, n, fps = FrameStride().execute(img, every_nth=1, fps=50.0)
+	assert n == 10 and fps == 50.0 and torch.equal(out, img)
+
+
+def test_edit_segments_paints_and_sweeps():
+	from tinode.nodes.image.edit_segments import (
+		EditSegments, parse_strokes, rasterize_stroke, painted_segments,
+	)
+	# a dab becomes a disc, a drag becomes a capsule; both stay inside the frame
+	dab = rasterize_stroke({"r": 3, "pts": [[20, 20]]}, 50, 50)
+	assert dab["bbox"] == [16, 16, 25, 25]
+	assert 20 <= int(dab["mask"].sum()) <= 40            # ~pi*r^2 = 28
+	drag = rasterize_stroke({"r": 3, "pts": [[10, 20], [30, 20]]}, 50, 50)
+	assert int(drag["mask"].sum()) > int(dab["mask"].sum())
+	assert rasterize_stroke({"r": 3, "pts": []}, 50, 50) is None
+	# clamped at the edge rather than running negative
+	edge = rasterize_stroke({"r": 8, "pts": [[1, 1]]}, 50, 50)
+	assert edge["bbox"][0] == 0 and edge["bbox"][1] == 0
+
+	# strokes are per-frame and signature-guarded
+	raw = json.dumps({"sig": "a", "strokes": [{"id": 2000001, "frame": 1, "r": 2,
+											   "pts": [[5, 5]]}]})
+	assert len(parse_strokes(raw, "a")) == 1
+	assert parse_strokes(raw, "b") == []
+	assert painted_segments(parse_strokes(raw, "a"), 0, 50, 50) == []      # other frame
+	assert len(painted_segments(parse_strokes(raw, "a"), 1, 50, 50)) == 1
+
+	# end to end: erase one input segment, paint a new one
+	segs = {"num_frames": 1, "height": 40, "width": 40, "ids": [7],
+			"frames": [[{"id": 7, "conf": 1.0, "bbox": [0, 0, 10, 10],
+						 "mask": torch.ones(10, 10, dtype=torch.uint8)}]]}
+	img = torch.zeros(1, 40, 40, 3)
+	mask, _im, filt, _bb = _unwrap(EditSegments().execute(
+		img, segs,
+		painted=json.dumps({"strokes": [{"id": 2000001, "frame": 0, "r": 4,
+										 "pts": [[30, 30]]}]})))
+	assert int(mask[0, 0:10, 0:10].sum()) == 100          # the input segment survives
+	assert int(mask[0, 26:35, 26:35].sum()) > 0           # the painted blob is there
+	assert 2000001 in filt["ids"] and 7 in filt["ids"]
+	# now delete the input segment too — only the painted one remains
+	mask2, _i2, filt2, _b2 = _unwrap(EditSegments().execute(
+		img, segs,
+		deleted_items=json.dumps({"items": [{"frame": 0, "index": 0}]}),
+		painted=json.dumps({"strokes": [{"id": 2000001, "frame": 0, "r": 4,
+										 "pts": [[30, 30]]}]})))
+	assert int(mask2[0, 0:10, 0:10].sum()) == 0 and filt2["ids"] == [2000001]
+
+
+def test_edit_segments_erases_pixels_from_existing_masks():
+	from tinode.nodes.image.edit_segments import (
+		EditSegments, apply_strokes, erase_segment, rasterize_stroke, tighten,
+	)
+	# a 10x10 block at (10,10); rub a disc out of its bottom-right corner
+	seg = {"id": 7, "conf": 1.0, "bbox": [10, 10, 20, 20],
+		   "mask": torch.ones(10, 10, dtype=torch.uint8)}
+	shape = rasterize_stroke({"r": 3, "pts": [[19, 19]]}, 40, 40)
+	cut = erase_segment(dict(seg), shape)
+	assert int(cut["mask"].sum()) < 100                     # pixels are gone
+	assert cut["bbox"] == [10, 10, 20, 20]                  # nothing emptied a whole edge
+	assert cut["mask"][9, 9] == 0 and cut["mask"][0, 0] == 1
+
+	# a stroke that covers the segment entirely drops it
+	assert erase_segment(dict(seg), rasterize_stroke(
+		{"r": 12, "pts": [[15, 15]]}, 40, 40)) is None
+	# ...and one that misses leaves it untouched
+	assert erase_segment(seg, rasterize_stroke({"r": 2, "pts": [[35, 35]]}, 40, 40)) is seg
+
+	# tighten pulls the bbox in once a whole band is erased
+	band = {"id": 7, "conf": 1.0, "bbox": [10, 10, 20, 20],
+			"mask": torch.ones(10, 10, dtype=torch.uint8)}
+	band["mask"][0:4, :] = 0
+	assert tighten(band)["bbox"] == [10, 14, 20, 20]
+
+	# strokes replay IN ORDER: an erase then a draw paints back over the hole
+	erase_st = {"id": 2000001, "mode": "erase", "frame": 0, "r": 12, "pts": [[15, 15]]}
+	draw_st = {"id": 2000002, "mode": "draw", "frame": 0, "r": 3, "pts": [[15, 15]]}
+	assert apply_strokes([dict(seg)], [erase_st], 0, 40, 40) == []
+	after = apply_strokes([dict(seg)], [erase_st, draw_st], 0, 40, 40)
+	assert [s["id"] for s in after] == [2000002]
+
+	# end to end through the node: SAM3's own segment loses the erased pixels
+	segs = {"num_frames": 1, "height": 40, "width": 40, "ids": [7],
+			"frames": [[{"id": 7, "conf": 1.0, "bbox": [10, 10, 20, 20],
+						 "mask": torch.ones(10, 10, dtype=torch.uint8)}]]}
+	img = torch.zeros(1, 40, 40, 3)
+	mask, _im, filt, _bb = _unwrap(EditSegments().execute(
+		img, segs,
+		painted=json.dumps({"strokes": [
+			{"id": 2000001, "mode": "erase", "frame": 0, "r": 3, "pts": [[19, 19]]}]})))
+	assert 0 < int(mask[0].sum()) < 100 and filt["ids"] == [7]
+	assert float(mask[0, 19, 19]) == 0.0 and float(mask[0, 10, 10]) == 1.0
+	# an erase drawn on another frame leaves this one alone
+	mask_other, _i, _f, _b = _unwrap(EditSegments().execute(
+		img, segs,
+		painted=json.dumps({"strokes": [
+			{"id": 2000001, "mode": "erase", "frame": 3, "r": 3, "pts": [[19, 19]]}]})))
+	assert int(mask_other[0].sum()) == 100
+
+
+def test_mask_frames_splits_a_batch_into_one_job_per_frame():
+	from tinode.nodes.mask_motion.mask_frames import (
+		MaskFrames, frame_indices, seed_for,
+	)
+	assert frame_indices(10) == list(range(10))
+	assert frame_indices(10, stride=3) == [0, 3, 6, 9]
+	assert frame_indices(10, start=4, limit=2) == [4, 5]
+	assert frame_indices(10, start=4, stride=2) == [4, 6, 8]
+	assert frame_indices(0) == []
+	# a start past the end clamps to the last frame rather than selecting nothing
+	assert frame_indices(3, start=99) == [2]
+
+	# seeds are spread, not adjacent — twelve near-identical images otherwise
+	seeds = [seed_for(7, i) for i in range(8)]
+	assert len(set(seeds)) == 8
+	assert min(abs(a - b) for a, b in zip(seeds, seeds[1:])) > 10 ** 8
+	assert seed_for(7, 3) == seed_for(7, 3)          # and reproducible
+	assert seed_for(8, 3) != seed_for(7, 3)
+	assert all(0 <= s <= 0xFFFFFFFFFFFFFFFF for s in seeds)
+
+	mask = torch.zeros(6, 8, 12)
+	for i in range(6):
+		mask[i, i, i] = 1.0                          # a marker per frame
+	(masks, idx, sds, count, preview,
+	 crops, xs, ys, ws, hs) = MaskFrames().execute(mask, seed=1, stride=2)
+	assert idx == [0, 2, 4] and count == 3 and len(masks) == 3 and len(sds) == 3
+	assert all(tuple(m.shape) == (1, 8, 12) for m in masks)
+	# each returned frame really is ITS frame, in order
+	for k, i in enumerate(idx):
+		assert float(masks[k][0, i, i]) == 1.0
+	assert tuple(preview.shape) == (3, 8, 12, 3)
+	# each frame's box wraps ITS marker, and the crop is that box of the mask
+	for k, i in enumerate(idx):
+		assert xs[k] <= i < xs[k] + ws[k] and ys[k] <= i < ys[k] + hs[k]
+		assert tuple(crops[k].shape) == (1, hs[k], ws[k])
+		assert float(crops[k].sum()) == 1.0        # the one marker pixel, nothing else
+	# a bare [H,W] mask is accepted as one frame
+	one, _i, _s, c1, _p, *_g = MaskFrames().execute(torch.zeros(4, 5))
+	assert c1 == 1 and tuple(one[0].shape) == (1, 4, 5)
+	# a start past the end gives the last frame rather than failing the run
+	assert MaskFrames().execute(mask, start=99)[3] == 1
+
+
+def test_mask_bbox_boxes_the_mask_so_the_object_can_fill_it():
+	from tinode.nodes.mask_motion.mask_frames import mask_bbox
+	m = torch.zeros(100, 200)
+	m[40:60, 90:110] = 1.0
+	assert mask_bbox(m, square=False) == (90, 40, 20, 20)
+	assert mask_bbox(m, pad=8) == (82, 32, 36, 36)
+	# a wide mask is squared around its centre, so a generated square is not squashed
+	w = torch.zeros(100, 200); w[45:55, 50:150] = 1.0
+	x, y, bw, bh = mask_bbox(w)
+	assert bw == bh == 100 and x == 50 and y == 0
+	# against an edge the box SLIDES inside instead of being clipped out of square
+	e = torch.zeros(100, 200); e[40:60, 0:20] = 1.0
+	assert mask_bbox(e, pad=10) == (0, 30, 40, 40)
+	# a box bigger than the frame clamps rather than going negative
+	big = torch.ones(20, 30)
+	x, y, bw, bh = mask_bbox(big, pad=50)
+	assert (x, y) == (0, 0) and bw <= 30 and bh <= 20
+	# an empty frame gives the whole frame — a zero-sized box divides by zero later
+	assert mask_bbox(torch.zeros(100, 200)) == (0, 0, 200, 100)
+
+
+def test_batch_join_puts_an_expanded_list_back_together():
+	from tinode.nodes.image.batch_join import BatchJoin
+	frames = [torch.full((1, 4, 6, 3), i / 10) for i in range(5)]
+	masks = [torch.full((1, 4, 6), i / 10) for i in range(5)]
+	out, m, n = BatchJoin().execute(frames, masks)
+	assert tuple(out.shape) == (5, 4, 6, 3) and tuple(m.shape) == (5, 4, 6) and n == 5
+	# order is preserved
+	for i in range(5):
+		assert abs(float(out[i].mean()) - i / 10) < 1e-6
+	# no masks wired = a zero mask of the right shape, not a crash
+	out2, m2, _n2 = BatchJoin().execute(frames)
+	assert tuple(m2.shape) == (5, 4, 6) and float(m2.sum()) == 0.0
+	# a bare [H,W,C] item is accepted as one frame
+	assert BatchJoin().execute([torch.zeros(4, 6, 3)])[2] == 1
+	# a frame of a different size is named, not swallowed by a torch error
+	try:
+		BatchJoin().execute([torch.zeros(1, 4, 6, 3), torch.zeros(1, 8, 8, 3)])
+	except RuntimeError as exc:
+		assert "item 1 is (8, 8, 3)" in str(exc) and "same size" in str(exc)
+	else:
+		raise AssertionError("expected a RuntimeError on a size mismatch")
+	try:
+		BatchJoin().execute([])
+	except RuntimeError as exc:
+		assert "nothing wired" in str(exc)
+	else:
+		raise AssertionError("expected a RuntimeError on an empty list")
+
+
+def test_prompt_template_drops_empty_slots_with_their_punctuation():
+	from tinode.nodes.data.prompt_template import PromptTemplate, fill_template
+	t = "a {2} {1}, {3}, {4}"
+	assert fill_template(t, ["Ball bearing", "polished chrome", "golden hour",
+							 "still life", "", ""]) == \
+		"a polished chrome Ball bearing, golden hour, still life"
+	# a missing middle slot takes its comma with it — no ", ," left behind
+	assert fill_template(t, ["Ball bearing", "", "golden hour", "", "", ""]) == \
+		"a Ball bearing, golden hour"
+	# ...including at the very front and the very end
+	assert fill_template("{1}, {2}, {3}", ["", "b", ""]) == "b"
+	assert fill_template("{1} and {2}", ["", ""]) == "and"
+	# an unknown slot stays visible rather than vanishing silently
+	assert "{9}" in fill_template("x {9}", ["a"])
+	# literal braces survive
+	assert fill_template("{{1}} is {1}", ["one"]) == "{1} is one"
+	# no template at all = join what was wired, in order
+	assert fill_template("", ["a", "", "b"]) == "a, b"
+	# multi-line templates keep their lines
+	assert fill_template("{1}\n{2}", ["one", "two"]) == "one\ntwo"
+
+	out, = PromptTemplate().execute(
+		template="a {1}, {2}", text_1="Pearl", text_2="", prefix="close-up of",
+		suffix="8k")
+	assert out == "close-up of, a Pearl, 8k"
+	# nothing wired at all still returns a string rather than failing
+	assert PromptTemplate().execute(template="{1}")[0] == ""
+
+
+def test_track_motion_circle_makes_a_context_ring_and_a_radius_ramp():
+	from tinode.nodes.mask_motion.circle_track import (
+		TrackMotionCircle, ramp_radii, render_circles,
+	)
+	# radius ramp: first frame is `start`, last is `end`, 0 means hold
+	assert ramp_radii(5, 10, 20) == [10.0, 12.5, 15.0, 17.5, 20.0]
+	assert ramp_radii(4, 10, 0) == [10.0] * 4
+	assert ramp_radii(1, 10, 20) == [10.0]
+	assert ramp_radii(0, 10, 20) == []
+
+	# a per-frame radius really is per frame
+	m = render_circles([(0.5, 0.5), (0.5, 0.5)], 128, 128, [8, 24], 0)
+	assert float(m[1].sum()) > float(m[0].sum()) * 5
+
+	track = json.dumps({"pts": [[0.3, 0.5, 0], [0.7, 0.5, 500]]})
+	mask, _img, n, context, outside = TrackMotionCircle().execute(
+		width=256, height=256, max_frames=5, radius=20, track=track,
+		context_width=10)
+	assert n == 5
+	# the ring hugs the circle: it stays out of the circle's interior, meeting it
+	# only where both edges are already fading into each other
+	assert not bool(((mask > 0.9) & (context > 0.1)).any())
+	assert float(context.sum()) > 0
+	# and it sits immediately outside — area of an annulus 20..30
+	ratio = float(context[0].sum()) / float(mask[0].sum())
+	assert abs(ratio - ((30 ** 2 - 20 ** 2) / 20 ** 2)) < 0.15, ratio
+	# `outside` is the complement of the circle
+	assert float((mask + outside - 1.0).abs().max()) < 1e-6
+	# no ring asked for = no ring given
+	_m2, _i2, _n2, none_ring, _o2 = TrackMotionCircle().execute(
+		width=64, height=64, max_frames=2, radius=8, track=track)
+	assert float(none_ring.sum()) == 0.0
+	# the circle really grows when radius_end is set
+	grow, _i3, _n3, _c3, _o3 = TrackMotionCircle().execute(
+		width=256, height=256, max_frames=5, radius=10, radius_end=40, track=track)
+	assert float(grow[4].sum()) > float(grow[0].sum()) * 8
+	# an empty track still returns all five outputs at the right shapes
+	e_mask, e_img, e_n, e_ctx, e_out = TrackMotionCircle().execute(
+		width=32, height=16, max_frames=3)
+	assert e_n == 3 and tuple(e_mask.shape) == (3, 16, 32)
+	assert tuple(e_img.shape) == (3, 16, 32, 3) and tuple(e_ctx.shape) == (3, 16, 32)
+	assert float(e_ctx.sum()) == 0.0 and float(e_out.min()) == 1.0
+
+
+def test_random_item_parses_a_messy_list():
+	from tinode.nodes.data.random_item import format_item, parse_list
+	items = parse_list("""
+# Round things
+> a note that is not an item
+
+1. **Ball** — A portable spherical object.
+12) Globe - A spherical representation of a world
+- Pearl: a naturally formed smooth sphere
+  *Marble*
+209. **Yo-yo** — Two round disks joined around an axle.
+200. **O-ring** — A flexible toroidal seal.
+
+""")
+	assert [i["name"] for i in items] == \
+		["Ball", "Globe", "Pearl", "Marble", "Yo-yo", "O-ring"]
+	# index is the position among KEPT items, not the number printed on the line
+	assert [i["index"] for i in items] == [1, 2, 3, 4, 5, 6]
+	assert items[0]["description"] == "A portable spherical object."
+	assert items[1]["description"] == "A spherical representation of a world"
+	assert items[2]["description"] == "a naturally formed smooth sphere"
+	assert items[3]["description"] == ""            # a bare name is still an item
+	# a hyphen with no spaces is part of the NAME, not a separator
+	assert items[4]["name"] == "Yo-yo" and items[4]["description"].startswith("Two")
+	assert items[5]["name"] == "O-ring"
+	# headings, blockquotes and blank lines never become entries
+	assert parse_list("# only a heading\n> and a note\n\n") == []
+	assert parse_list("") == []
+
+	it = items[0]
+	assert format_item(it, "name") == "Ball"
+	assert format_item(it, "description") == "A portable spherical object."
+	assert format_item(it, "name — description") == "Ball — A portable spherical object."
+	assert format_item(it, "raw line") == "1. **Ball** — A portable spherical object."
+	# a nameless-description request on an item that has none falls back to the name
+	assert format_item(items[3], "description") == "Marble"
+	assert format_item(items[3], "name — description") == "Marble"
+
+
+def test_random_item_draws_reproducibly():
+	from tinode.nodes.data.random_item import RandomItem, choose, parse_list
+	items = parse_list("\n".join(f"{i}. Item{i}" for i in range(1, 21)))
+	assert len(items) == 20
+	# the same seed is the same draw; a different seed is a different one
+	assert choose(items, 7, 5) == choose(items, 7, 5)
+	assert choose(items, 7, 5) != choose(items, 8, 5)
+	# two DIFFERENT lists of the same length must not draw the same index off
+	# one shared seed — five of these nodes normally run off a single seed
+	other = parse_list("\n".join(f"{i}. Thing{i}" for i in range(1, 21)))
+	assert len(other) == len(items)
+	same_index = sum(1 for s in range(60)
+					 if choose(items, s, 1)[0]["index"] == choose(other, s, 1)[0]["index"])
+	assert same_index < 12, f"{same_index}/60 draws correlated across lists"
+	# unique never repeats within a draw
+	names = [i["name"] for i in choose(items, 3, 20, unique=True)]
+	assert sorted(names) == sorted(i["name"] for i in items)
+	# asking for more than the list holds gives the whole list, shuffled
+	assert len(choose(items, 3, 99, unique=True)) == 20
+	# without unique, repeats are allowed (and with this seed, happen)
+	drawn = [i["name"] for i in choose(items, 1, 40, unique=False)]
+	assert len(drawn) == 40 and len(set(drawn)) < 40
+	assert choose([], 1, 3) == []
+
+	# through the node, from the inline text source
+	body, name, desc, index, size = RandomItem().execute(
+		seed=42, source="text", text="1. **Ball** — round\n2. **Cube** — not round",
+		count=1, format="name — description")
+	assert size == 2 and index in (1, 2) and name in ("Ball", "Cube")
+	assert body == f"{name} — {desc}"
+	# count > 1 joins with newlines and the scalar outputs describe the first
+	multi, first_name, _d, _i, _s = RandomItem().execute(
+		seed=5, source="text", text="a\nb\nc\nd", count=3)
+	assert len(multi.splitlines()) == 3
+	assert multi.splitlines()[0] == first_name
+	# every failure has to say what it actually looked at
+	def fails(msg_part, **kw):
+		try:
+			RandomItem().execute(**kw)
+		except RuntimeError as exc:
+			assert msg_part in str(exc), f"{msg_part!r} not in {exc}"
+			return str(exc)
+		raise AssertionError(f"expected a RuntimeError mentioning {msg_part!r}")
+
+	# a list of nothing but headings names the source and counts the lines
+	msg = fails("no items found", seed=0, source="text",
+				text="# a heading\n> a note\n\n")
+	assert "inline text box" in msg and "3 line(s), 2 of them heading" in msg
+	# the source switch on the wrong setting is called out by name, both ways
+	fails("source is `text` but the text box is empty", seed=0, source="text",
+		  text="", file_path="/some/list.txt")
+	fails("There IS a list in the text box", seed=0, source="file",
+		  file_path="", text="Ball")
+	fails("file_path is empty", seed=0, source="file", file_path="")
+	# a missing file names the path; a folder says so and lists what is inside
+	fails("no such file", seed=0, source="file", file_path="/no/such/list.txt")
+	folder = fails("That is a FOLDER", seed=0, source="file",
+				   file_path=os.path.dirname(os.path.abspath(__file__)))
+	assert "test_nodes.py" in folder
+
+
+def test_track_motion_circle_replays_the_stroke_at_the_speed_it_was_drawn():
+	from tinode.nodes.mask_motion.circle_track import parse_track, sample_positions
+	# a stroke that crawls across the first half of the path and races the second:
+	# 0 -> 0.5 takes 900ms, 0.5 -> 1.0 takes 100ms
+	pts = [(0.0, 0.5, 0.0), (0.5, 0.5, 900.0), (1.0, 0.5, 1000.0)]
+	rec = sample_positions(pts, 11, "recorded")
+	assert len(rec) == 11
+	assert rec[0] == (0.0, 0.5) and abs(rec[-1][0] - 1.0) < 1e-6
+	# half the FRAMES are spent in the slow half, because half the TIME was
+	assert abs(rec[5][0] - 0.5 * (500 / 900)) < 1e-6, rec[5]
+	# 90% of the time was spent on the first half, so 10 of the 11 frames are
+	# there and the fast half is crossed in the very last one
+	assert abs(rec[9][0] - 0.5) < 1e-6, rec[9]
+	assert sum(1 for x, _y in rec if x <= 0.5) == 10
+	assert abs(rec[10][0] - 1.0) < 1e-6
+
+	# even timing ignores the pace and walks equal distance per frame
+	ev = sample_positions(pts, 11, "even")
+	for f, (x, _y) in enumerate(ev):
+		assert abs(x - f / 10) < 1e-6, (f, x)
+
+	# a stroke drawn faster than the clock can see falls back to even, rather
+	# than stacking every frame onto the last point
+	flat = [(0.0, 0.0, 7.0), (1.0, 0.0, 7.0)]
+	assert abs(sample_positions(flat, 3, "recorded")[1][0] - 0.5) < 1e-6
+	# a press that never moved holds still for every frame
+	assert sample_positions([(0.2, 0.3, 0.0), (0.2, 0.3, 500.0)], 4, "even") == \
+		[(0.2, 0.3)] * 4
+	# degenerate inputs give nothing rather than raising
+	assert sample_positions([], 5, "recorded") == []
+	assert sample_positions(pts, 0, "recorded") == []
+	assert sample_positions(pts, 1, "recorded") == [(0.0, 0.5)]
+
+	# the widget decoder survives junk, and defaults a missing timestamp
+	assert parse_track("") == [] and parse_track("not json") == []
+	assert parse_track(json.dumps({"pts": [[0.1, 0.2]]})) == [(0.1, 0.2, 0.0)]
+	assert parse_track(json.dumps({"pts": [[0, 0, 0], "x", [1, 1, 5]]})) == \
+		[(0.0, 0.0, 0.0), (1.0, 1.0, 5.0)]
+
+
+def test_track_motion_circle_renders_a_circle_that_moves():
+	from tinode.nodes.mask_motion.circle_track import TrackMotionCircle, render_circles
+	m = render_circles([(0.5, 0.5)], 64, 64, 10, 0)
+	assert tuple(m.shape) == (1, 64, 64)
+	assert float(m[0, 32, 32]) == 1.0                       # centre is solid
+	assert float(m[0, 0, 0]) == 0.0                         # corner is empty
+	area = float(m.sum())
+	assert abs(area - math.pi * 100) / (math.pi * 100) < 0.05, area   # ~pi r^2
+	# radius is in PIXELS, so a non-square canvas still gives a round circle
+	m2 = render_circles([(0.5, 0.5)], 128, 64, 10, 0)
+	rows = (m2[0] > 0.5).sum(dim=1).max().item()
+	cols = (m2[0] > 0.5).sum(dim=0).max().item()
+	assert rows == cols, (rows, cols)
+	# a circle wholly off-canvas leaves an empty frame instead of wrapping
+	assert float(render_circles([(-2.0, -2.0)], 32, 32, 4, 0).sum()) == 0.0
+	# feather softens the rim without hollowing the middle
+	soft = render_circles([(0.5, 0.5)], 64, 64, 10, 6)
+	assert float(soft[0, 32, 32]) == 1.0 and float(soft.sum()) < area
+
+	# end to end: the circle is in a different place on the first and last frame
+	track = json.dumps({"pts": [[0.1, 0.5, 0], [0.9, 0.5, 1000]]})
+	mask, image, n, _ctx, _out = TrackMotionCircle().execute(
+		width=256, height=128, max_frames=9, radius=12, track=track)
+	assert n == 9 and tuple(mask.shape) == (9, 128, 256)
+	assert tuple(image.shape) == (9, 128, 256, 3)
+	def cx(fr):
+		xs = (fr > 0.5).nonzero()
+		return float(xs[:, 1].float().mean())
+	assert abs(cx(mask[0]) - 0.1 * 256) < 1.5
+	assert abs(cx(mask[8]) - 0.9 * 256) < 1.5
+	assert cx(mask[4]) > cx(mask[0]) and cx(mask[8]) > cx(mask[4])
+	# nothing drawn yet = empty frames of the right shape, not a crash
+	blank, _img, bn, _c, _o = TrackMotionCircle().execute(
+		width=64, height=32, max_frames=5)
+	assert bn == 5 and tuple(blank.shape) == (5, 32, 64) and float(blank.sum()) == 0.0
+
+
+def _write_png(path, arr):
+	import numpy as np
+	from PIL import Image
+	os.makedirs(os.path.dirname(path), exist_ok=True)
+	mode = "I;16" if arr.dtype == np.uint16 else ("RGBA" if arr.shape[-1] == 4 else "RGB")
+	Image.fromarray(arr, mode=None if arr.ndim == 3 else mode).save(path)
+
+
+def test_load_clip_frames_reads_a_png_sequence_in_filename_order():
+	import numpy as np
+	from tinode.nodes.image.clip_frames import (
+		LoadClipFrames, find_frame_dir, list_frames, load_image_files,
+	)
+	with tempfile.TemporaryDirectory() as tmp:
+		seq = os.path.join(tmp, "sh0090")
+		# the AMIR shape: numbers run 0,2,4,... so index N is simply the Nth file
+		for n, i in enumerate(range(0, 10, 2)):
+			a = np.full((4, 6, 3), n * 20, dtype=np.uint8)
+			_write_png(os.path.join(seq, f"sh0090.{i:04d}.png"), a)
+
+		# the clip's own folder wins; a folder that holds the frames directly works too
+		assert find_frame_dir(tmp, "sh0090") == seq
+		assert find_frame_dir(seq, "nope") == seq
+		assert find_frame_dir(tmp, "missing") == tmp
+		assert find_frame_dir("", "x") is None
+
+		files = list_frames(seq)
+		assert [os.path.basename(f) for f in files] == [
+			"sh0090.0000.png", "sh0090.0002.png", "sh0090.0004.png",
+			"sh0090.0006.png", "sh0090.0008.png"]
+		imgs = load_image_files(files)
+		assert tuple(imgs.shape) == (5, 4, 6, 3) and imgs.dtype == torch.float32
+		assert abs(float(imgs[2].mean()) - 40 / 255.0) < 1e-4     # index 2 = the 3rd file
+
+		clip = {"stem": "sh0090", "crops": [], "fps": 25.0, "every_nth": 1}
+		out, fps, n, folder = LoadClipFrames().execute(clip, frames_dir=tmp)
+		assert n == 5 and fps == 25.0 and folder == seq
+		assert torch.equal(out, imgs)
+
+		# every_nth strides while loading — the skipped frames are never read
+		out2, fps2, n2, _ = LoadClipFrames().execute(clip, frames_dir=tmp, every_nth=2)
+		assert n2 == 3 and fps2 == 12.5
+		assert torch.equal(out2, imgs[::2])
+		# a wired source_stride overrides the widget, so the two can't disagree
+		out3, fps3, n3, _ = LoadClipFrames().execute(
+			clip, frames_dir=tmp, every_nth=1, every_nth_in=2)
+		assert n3 == 3 and fps3 == 12.5 and torch.equal(out3, out2)
+		# an explicit fps beats the manifest's
+		assert LoadClipFrames().execute(clip, frames_dir=tmp, fps=50.0)[1] == 50.0
+
+		# an empty folder names the folder it looked in rather than failing blankly
+		try:
+			LoadClipFrames().execute({"stem": "nothing", "crops": []}, frames_dir=tmp)
+		except RuntimeError as exc:
+			assert "no *.png" in str(exc)
+		else:
+			raise AssertionError("expected a RuntimeError for an empty sequence")
+
+
+def test_load_clip_frames_keeps_16_bit_and_rejects_a_size_change():
+	import numpy as np
+	from tinode.nodes.image.clip_frames import list_frames, load_image_files
+	with tempfile.TemporaryDirectory() as tmp:
+		import cv2
+		# 16-bit stays 16-bit: 32768/65535, not 128/255
+		cv2.imwrite(os.path.join(tmp, "a0.png"),
+					np.full((4, 4, 3), 32768, dtype=np.uint16))
+		v = float(load_image_files([os.path.join(tmp, "a0.png")]).mean())
+		assert abs(v - 32768 / 65535.0) < 1e-4, v
+		# a frame of another size is caught, not silently stacked
+		cv2.imwrite(os.path.join(tmp, "a1.png"), np.zeros((8, 8, 3), dtype=np.uint16))
+		try:
+			load_image_files(list_frames(tmp))
+		except RuntimeError as exc:
+			assert "must be the same size" in str(exc)
+		else:
+			raise AssertionError("expected a RuntimeError on a size change")
+
+
+def test_load_clip_fills_can_skip_a_missing_source_video():
+	from tinode.nodes.image import _mask_store as store
+	from tinode.nodes.image.removal_pass import LoadClipFills
+	with tempfile.TemporaryDirectory() as tmp:
+		idir = os.path.join(tmp, "sh0090", "c00_k00")
+		os.makedirs(store.mask_dir(idir), exist_ok=True)
+		os.makedirs(store.filled_dir(idir), exist_ok=True)
+		import numpy as np
+		from PIL import Image
+		for i in range(3):
+			Image.fromarray(np.zeros((4, 6), np.uint8), "L").save(
+				os.path.join(store.mask_dir(idir), store.MASK_PATTERN % i))
+			Image.fromarray(np.zeros((4, 6, 3), np.uint8)).save(
+				os.path.join(store.filled_dir(idir), store.FILLED_PATTERN % i))
+		crop = {"stem": "sh0090", "crop_index": 0, "chunk_index": 0,
+				"frame_start": 0, "frame_end": 3, "frame_count": 3,
+				"has_filled": True, "filled_frames": 3, "source_every_nth": 1,
+				"crop_info": {"H": 4, "W": 6, "C": 3,
+							  "items": [{"y0": 0, "x0": 0, "h": 4, "w": 6,
+										 "oy": 0, "ox": 0, "nh": 4, "nw": 6}]},
+				"item_dir": idir, "mask_dir": store.mask_dir(idir)}
+		clip = {"stem": "sh0090", "source_path": "", "fps": 25.0,
+				"crops": [crop], "every_nth": 1}
+
+		# the default still refuses, and says how to proceed
+		try:
+			LoadClipFills().execute(clip)
+		except RuntimeError as exc:
+			assert "Load Clip Frames" in str(exc)
+		else:
+			raise AssertionError("a missing source must fail by default")
+
+		# ...and with require_source off, everything but `video` comes through
+		video, crops, infos, masks, stem, count, starts, stride = \
+			LoadClipFills().execute(clip, require_source=False)
+		assert video is None and stem == "sh0090" and count == 1
+		assert tuple(crops[0].shape) == (3, 4, 6, 3)
+		assert tuple(masks[0].shape) == (3, 4, 6)
+		assert starts == [0] and stride == 1 and infos[0] == crop["crop_info"]
+
+
+def test_save_masks_drops_a_fill_belonging_to_a_re_authored_crop():
+	from tinode.nodes.image.save_masks import fill_keys_to_carry
+	prev = {"crop_width": 944, "crop_height": 1328, "frame_start": 12,
+			"frame_end": 221, "frame_count": 209,
+			"has_filled": True, "filled_frames": 112, "has_filled_pass1": True}
+	same = dict(prev)                                   # re-saved, nothing moved
+	carry, stale = fill_keys_to_carry(prev, same)
+	assert sorted(carry) == ["filled_frames", "has_filled", "has_filled_pass1"]
+	assert stale == []
+	# a different BOX means the fill is of other pixels
+	moved = dict(prev, crop_width=672, crop_height=1280)
+	carry, stale = fill_keys_to_carry(prev, moved)
+	assert carry == [] and sorted(stale) == ["filled_frames", "has_filled",
+											 "has_filled_pass1"]
+	# a different RANGE means the fill is of other frames
+	shifted = dict(prev, frame_start=0, frame_end=209)
+	assert fill_keys_to_carry(prev, shifted)[0] == []
+	# a longer/shorter chunk at the same start, too
+	assert fill_keys_to_carry(prev, dict(prev, frame_count=92))[0] == []
+	# nothing rendered yet: nothing to carry and nothing to warn about
+	assert fill_keys_to_carry({"crop_width": 10}, {"crop_width": 99}) == ([], [])
+
+
+def test_pick_segments_grows_and_shrinks_selected_ids():
+	from tinode.nodes.image.pick_segments import grow_segment
+	seg = {"id": 7, "conf": 1.0, "bbox": [10, 10, 20, 20],
+		   "mask": torch.ones(10, 10, dtype=torch.uint8)}
+	# grow: the bbox expands by the margin and the mask fills it
+	g = grow_segment(seg, 3, 100, 100)
+	assert g["bbox"] == [7, 7, 23, 23] and tuple(g["mask"].shape) == (16, 16)
+	assert int(g["mask"].sum()) == 16 * 16
+	# shrink: the box stays, the mask erodes inward
+	s = grow_segment(seg, -2, 100, 100)
+	assert s["bbox"] == [10, 10, 20, 20]
+	assert int(s["mask"].sum()) == 6 * 6
+	# clamped at the frame edge, never negative coordinates
+	edge = {"id": 1, "conf": 1.0, "bbox": [0, 0, 5, 5],
+			"mask": torch.ones(5, 5, dtype=torch.uint8)}
+	e = grow_segment(edge, 4, 8, 8)
+	assert e["bbox"] == [0, 0, 8, 8]
+	assert grow_segment(seg, 0, 100, 100) is seg          # 0 is a no-op
+
+	# the widget only applies to the matching input signature
+	assert PickSegments._grow_map('{"sig": "a", "grow": {"7": 3}}', "a") == {7: 3}
+	assert PickSegments._grow_map('{"sig": "a", "grow": {"7": 3}}', "b") == {}
+	assert PickSegments._grow_map("junk", "a") == {}
+
+	# end to end: growing a selected id widens its mask in the output
+	segs = {"num_frames": 1, "height": 40, "width": 40, "ids": [7],
+			"frames": [[{"id": 7, "conf": 1.0, "bbox": [10, 10, 20, 20],
+						 "mask": torch.ones(10, 10, dtype=torch.uint8)}]]}
+	img = torch.zeros(1, 40, 40, 3)
+	plain = _unwrap(PickSegments().execute(img, segs))[0]
+	grown = _unwrap(PickSegments().execute(img, segs, grow_ids='{"grow": {"7": 3}}'))[0]
+	assert int(grown.sum()) > int(plain.sum())
+	assert int(plain.sum()) == 100 and int(grown.sum()) == 256
+
+
 def test_pick_segments_filters_by_id():
 	segs, img = _segments(), torch.zeros(2, 40, 40, 3)
 	mask, _, out, _bbox = _unwrap(PickSegments().execute(img, segs, excluded_ids="[3]"))
@@ -987,7 +1649,9 @@ def test_web_js_calls_are_all_defined():
 	globals_ = {
 		"Math", "JSON", "Object", "Array", "Number", "String", "Boolean", "Set",
 		"Map", "Image", "Promise", "parseInt", "parseFloat", "isNaN", "console",
-		"document", "window", "requestAnimationFrame", "setTimeout", "ResizeObserver",
+		"document", "window", "requestAnimationFrame", "cancelAnimationFrame",
+		"setTimeout", "clearTimeout", "setInterval", "clearInterval",
+		"ResizeObserver", "performance",
 		"encodeURIComponent", "decodeURIComponent", "Infinity",
 		"alert", "confirm", "prompt", "fetch", "FormData", "URL", "Date", "Error",
 	}
@@ -1514,6 +2178,59 @@ def test_divide_rectangle_tiles_and_reassembles():
 	assert torch.equal(rebuilt, img), "tiles must reassemble to the original"
 
 
+def test_paste_back_reassembles_a_tiling_from_per_tile_crop_infos():
+	"""Divide · Rectangle -> process each tile -> Paste Back = the frame again."""
+	from tinode.nodes.div.rectangle import DivideRectangle
+	from tinode.nodes.image.paste_back import MaskCropPasteBack
+
+	img = torch.rand(1, 60, 80, 3)
+	tiles, _grid, infos, count = DivideRectangle().execute(img, rows=2, cols=2)
+	assert count == 4
+	# stand in for the img2img pass: each tile comes back a different flat colour
+	edited = [torch.full_like(t, 0.1 * (i + 1)) for i, t in enumerate(tiles)]
+
+	# INPUT_IS_LIST, so every input arrives wrapped exactly as the executor sends it
+	out, = MaskCropPasteBack().execute([img], edited, infos, feather=[0])
+	assert tuple(out.shape) == (1, 60, 80, 3)
+	# every tile landed in ITS OWN quarter, not stacked in the first one
+	for t, info in zip(edited, infos):
+		it = info["items"][0]
+		region = out[:, it["y0"]:it["y0"] + it["h"], it["x0"]:it["x0"] + it["w"], :]
+		assert torch.equal(region, t)
+	assert not torch.equal(out, img)
+
+	# a single transform with per-FRAME items still means what it always meant
+	single = [{"H": 60, "W": 80, "C": 3,
+			   "items": [{"y0": 0, "x0": 0, "h": 30, "w": 40,
+						  "oy": 0, "ox": 0, "nh": 30, "nw": 40}]}]
+	one, = MaskCropPasteBack().execute([img], [edited[0]], single, feather=[0])
+	assert torch.equal(one[:, 0:30, 0:40, :], edited[0])
+	assert torch.equal(one[:, 30:60, 40:80, :], img[:, 30:60, 40:80, :])
+
+
+def test_paste_back_scales_a_tile_generated_at_another_resolution():
+	"""Tiles are usually upscaled to the model's working size before generation."""
+	from tinode.nodes.div.rectangle import DivideRectangle
+	from tinode.nodes.image.paste_back import MaskCropPasteBack
+
+	img = torch.rand(1, 60, 80, 3)
+	tiles, _g, infos, _c = DivideRectangle().execute(img, rows=2, cols=2)
+	assert tuple(tiles[0].shape) == (1, 30, 40, 3)
+	# each tile comes back 4x bigger, as a flat colour so resampling is exact
+	big = [torch.full((1, 120, 160, 3), 0.1 * (i + 1)) for i in range(4)]
+
+	out, = MaskCropPasteBack().execute([img], big, infos, feather=[0])
+	assert tuple(out.shape) == (1, 60, 80, 3)
+	for t, info in zip(big, infos):
+		it = info["items"][0]
+		region = out[:, it["y0"]:it["y0"] + it["h"], it["x0"]:it["x0"] + it["w"], :]
+		assert torch.allclose(region, t[:, :1, :1, :].expand_as(region), atol=1e-5)
+
+	# a same-size crop is still pasted bit-exactly, with no resampling
+	same, = MaskCropPasteBack().execute([img], list(tiles), infos, feather=[0])
+	assert torch.equal(same, img)
+
+
 def test_divide_rectangle_uneven_and_overlap():
 	from tinode.nodes.div.rectangle import DivideRectangle
 	img = torch.rand(1, 10, 10, 3)
@@ -1528,6 +2245,43 @@ def test_divide_rectangle_uneven_and_overlap():
 	assert count == 4 and all(t.shape[1] > 0 and t.shape[2] > 0 for t in tiles)
 
 
+def test_parse_frame_ranges_js():
+	# The propagate modal's range parser, exercised in node (same file the
+	# browser loads), since a wrong range silently stamps the wrong frames.
+	import re
+	import shutil
+	import subprocess
+
+	if not shutil.which("node"):
+		print("    (skipped: node not installed)", end="")
+		return
+	root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+	src = open(os.path.join(root, "web", "add_segments.js")).read()
+	m = re.search(r"export (function parseFrameRanges\([\s\S]*?\n\})", src)
+	assert m, "could not find parseFrameRanges in web/add_segments.js"
+	script = m.group(1) + """
+const out = [
+  parseFrameRanges("8-16, 32-48", 100),
+  parseFrameRanges("5", 100),
+  parseFrameRanges("3-5", 100, 4),        // the source frame is excluded
+  parseFrameRanges("16-8", 100),          // reversed reads the same
+  parseFrameRanges("0-999", 5),           // clamped to the clip
+  parseFrameRanges("junk, -2, 7", 100),   // junk ignored
+  parseFrameRanges("", 100),
+];
+console.log(JSON.stringify(out));
+"""
+	got = json.loads(subprocess.run(["node", "-e", script], capture_output=True,
+									text=True, check=True).stdout)
+	assert got[0] == list(range(8, 17)) + list(range(32, 49))
+	assert got[1] == [5]
+	assert got[2] == [3, 5]
+	assert got[3] == list(range(8, 17))
+	assert got[4] == [0, 1, 2, 3, 4]
+	assert got[5] == [7]         # "junk" and a bare "-2" are dropped, not guessed at
+	assert got[6] == []
+
+
 def test_show_text_lines_numbers_and_flattens():
 	from tinode.nodes.data.show_text import ShowTextLines
 	n = ShowTextLines()
@@ -1537,6 +2291,42 @@ def test_show_text_lines_numbers_and_flattens():
 	assert r["ui"]["text"][0] == "1. hello\n2. a\n3. b"
 	# nothing wired says so rather than showing an empty box
 	assert "nothing wired" in ShowTextLines().execute()["ui"]["text"][0]
+
+
+def test_crop_divisible_trims_both_sides():
+	from tinode.nodes.div.divisible import CropDivisible, trim_amounts
+	# the remainder is split across BOTH sides, odd extra to the end
+	assert trim_amounts(1080, 8) == (0, 0)               # already divisible
+	assert trim_amounts(1000, 8) == (0, 0)
+	assert trim_amounts(1006, 8) == (3, 3)               # 6 off -> 3 + 3
+	assert trim_amounts(1005, 8) == (2, 3)               # 5 off -> centred, extra last
+	assert trim_amounts(1005, 8, "center_bias_start") == (3, 2)
+	assert trim_amounts(1005, 8, "start") == (0, 5)      # keep the top/left edge
+	assert trim_amounts(1005, 8, "end") == (5, 0)
+
+	img = torch.rand(2, 1005, 1006, 3)
+	mask = torch.rand(2, 1005, 1006)
+	out, m, info, w, h = CropDivisible().execute(
+		img, divisible_width=8, divisible_height=8, mask=mask)
+	assert (w, h) == (1000, 1000) and w % 8 == 0 and h % 8 == 0
+	assert tuple(out.shape) == (2, 1000, 1000, 3) and tuple(m.shape) == (2, 1000, 1000)
+	# bit-exact slice, taken from both sides (3 off left, 2 off top)
+	assert torch.equal(out, img[:, 2:1002, 3:1003, :])
+	assert torch.equal(m, mask[:, 2:1002, 3:1003])
+	# width and height divide independently
+	_o, _m, _i, w2, h2 = CropDivisible().execute(img, divisible_width=100, divisible_height=7)
+	assert w2 % 100 == 0 and h2 % 7 == 0
+	# crop_info puts it back in the original frame
+	it = info["items"][0]
+	assert (it["y0"], it["x0"], it["h"], it["w"]) == (2, 3, 1000, 1000)
+	assert info["H"] == 1005 and info["W"] == 1006
+	# a divisor bigger than the frame is a readable error, not an empty tensor
+	try:
+		CropDivisible().execute(torch.rand(1, 10, 10, 3), divisible_width=64)
+	except RuntimeError as exc:
+		assert "cannot be made divisible" in str(exc)
+	else:
+		raise AssertionError("expected an error when the whole frame would be trimmed")
 
 
 def test_divide_rectangle_by_size():
@@ -1967,6 +2757,632 @@ def test_video_source_path_extracts_stem():
 
 	assert video_source_path(FakeVideo()) == "/x/y/dicaire/DICAIRE T 01 pour test IA.mp4"
 	assert video_source_path(object()) is None       # not file-backed
+
+
+# --------------------------------------------------------- video preview (RAM)
+def _gradient(n=4, h=32, w=48):
+	"""A smooth ramp, continuous in every direction.
+
+	Noise would measure DCT loss and a 255->0 cliff would measure chroma
+	subsampling — neither of which is what these tests are about.
+	"""
+	import numpy as np
+
+	yy, xx = np.mgrid[0:h, 0:w]
+	f = np.stack([xx * 255.0 / (w - 1), yy * 255.0 / (h - 1),
+				  (xx + yy) * 255.0 / (w + h - 2)], -1)
+	# Frames differ by a gain, not by a roll: rolling wraps 255 next to 0 and the
+	# resulting cliff measures chroma subsampling instead of what is under test.
+	return np.stack([(f * (0.55 + 0.1 * i)).round().astype(np.uint8) for i in range(n)])
+
+
+def _decode_rgb(data, ext, w, h, depth=8):
+	"""Decode encoded bytes back to an array, to check what a player would see."""
+	import subprocess
+
+	import numpy as np
+
+	with tempfile.TemporaryDirectory() as d:
+		p = os.path.join(d, "c." + ext)
+		with open(p, "wb") as fh:
+			fh.write(data)
+		out = subprocess.run(
+			[ffmpeg_exe(), "-v", "error", "-i", p, "-f", "rawvideo",
+			 "-pix_fmt", "rgb48le" if depth == 16 else "rgb24", "pipe:1"],
+			capture_output=True)
+		assert out.returncode == 0, out.stderr.decode()[-400:]
+		return np.frombuffer(out.stdout, "<u2" if depth == 16 else np.uint8).reshape(-1, h, w, 3)
+
+
+def test_colour_flags_convert_as_well_as_tag():
+	"""The bug: -colorspace / -color_range only WRITE TAGS.
+
+	ffmpeg's implicit rgb->yuv conversion is BT.601 limited whatever you tag, so
+	Save Video's own defaults (bt709 + tv) converted as 601 and labelled 709.
+	Players undid a matrix that was never applied: measured up to 32/255 off,
+	mean 5.9, on the node that exists to keep a grade intact. The filter has to be
+	emitted alongside the tags — and only when something was actually asked for.
+	"""
+	filt, tags = colour_flags("tv", "bt709")
+	assert filt == ["-vf", "scale=in_range=full:out_color_matrix=bt709:out_range=limited"]
+	assert tags == ["-colorspace", "bt709", "-color_primaries", "bt709",
+					"-color_trc", "bt709", "-color_range", "tv"]
+
+	assert colour_flags("pc", "bt709")[0][1].endswith("out_range=full")
+	# Nothing requested -> nothing imposed; ffmpeg's own default is left alone.
+	assert colour_flags("unspecified", "unspecified") == ([], [])
+	# One without the other still converts for the one that was asked for.
+	assert colour_flags("unspecified", "bt709")[0] == ["-vf", "scale=in_range=full:out_color_matrix=bt709"]
+	assert colour_flags("tv", "unspecified")[0] == ["-vf", "scale=in_range=full:out_range=limited"]
+
+
+def test_encode_round_trips_within_its_own_colour_tags():
+	"""Save Video's output must decode back to what went in. Regression for the above."""
+	if ffmpeg_exe() is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	import numpy as np
+
+	src = _gradient()
+	t = torch.from_numpy(src.astype("float32") / 255.0)
+	for cr, cs, pf, tol in (("tv", "bt709", "yuv444p", 2), ("pc", "bt709", "yuv444p", 1),
+							("tv", "bt709", "yuv420p", 10)):
+		with tempfile.TemporaryDirectory() as d:
+			out = os.path.join(d, "c.mp4")
+			_vio_encode(t, out, fps=24.0, codec="libx264", crf=0, pix_fmt=pf,
+						color_range=cr, colorspace=cs)
+			with open(out, "rb") as fh:
+				back = _decode_rgb(fh.read(), "mp4", src.shape[2], src.shape[1])
+		err = int(np.abs(back.astype(int) - src.astype(int)).max())
+		# 4:4:4 leaves only matrix rounding; 4:2:0 also subsamples chroma, which is
+		# content-dependent — the tolerances are loose enough to be about the bug
+		# (which measured 32-35) and not about the test image.
+		assert err <= tol, f"{cs}/{cr}/{pf} came back {err} levels out (tolerance {tol})"
+
+
+def test_video_preview_precision_auto_keeps_what_the_source_carries():
+	"""auto must not quantise a >8-bit clip, and must not double the RAM of an 8-bit one."""
+	import numpy as np
+
+	eight = torch.from_numpy(_gradient().astype("float32") / 255.0)
+	raw, n, h, w, depth = _pstore.pack_frames(eight, "auto")
+	assert depth == 8 and len(raw) == n * h * w * 3
+	assert np.frombuffer(raw, np.uint8).reshape(n, h, w, 3).tobytes() == _gradient().tobytes()
+
+	deep = eight + 1.0 / 1000.0            # off the 1/255 grid: real extra precision
+	raw16, _, _, _, d16 = _pstore.pack_frames(deep, "auto")
+	assert d16 == 16 and len(raw16) == n * h * w * 3 * 2
+	# ...and the override is obeyed in both directions.
+	assert _pstore.pack_frames(deep, "8-bit")[4] == 8
+	assert _pstore.pack_frames(eight, "16-bit")[4] == 16
+
+
+def test_video_preview_lossless_downloads_are_bit_exact():
+	"""CREATE VIDEO's lossless options must match the frames the graph produced.
+
+	The preview you watch is a lossy proxy; the download re-encodes from the
+	untouched master. ffv1 and the png zip claim bit-exactness, so prove it.
+	"""
+	if ffmpeg_exe() is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	import io
+	import zipfile
+
+	import numpy as np
+	from PIL import Image
+
+	src = _gradient()
+	raw, n, h, w, depth = _pstore.pack_frames(
+		torch.from_numpy(src.astype("float32") / 255.0), "auto")
+	sess = {"raw": raw, "n": n, "h": h, "w": w, "depth": depth, "fps": 24.0}
+
+	data, ext, _ = _pstore.render(sess, "ffv1")
+	assert np.array_equal(_decode_rgb(data, ext, w, h), src), "ffv1 is not bit-exact"
+
+	data, ext, mime = _pstore.render(sess, "png")
+	assert (ext, mime) == ("zip", "application/zip")
+	with zipfile.ZipFile(io.BytesIO(data)) as zf:
+		names = sorted(zf.namelist())
+		frames = np.stack([np.asarray(Image.open(io.BytesIO(zf.read(nm))).convert("RGB"))
+						   for nm in names])
+	assert names == [f"{i:05d}.png" for i in range(n)]
+	assert np.array_equal(frames, src), "png sequence is not bit-exact"
+
+
+def test_video_preview_holds_the_clip_only_in_ram():
+	"""The whole point: previewing must leave nothing behind.
+
+	The mp4/mov encoders need a seekable output, so they use a private tempfile
+	dir — which must be gone by the time render() returns, whatever happened.
+	"""
+	if ffmpeg_exe() is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	scratch = lambda: {p for p in os.listdir(tempfile.gettempdir()) if p.startswith("tinode_vp_")}
+	before = scratch()
+
+	clip = torch.from_numpy(_gradient().astype("float32") / 255.0)
+	res = VideoPreview().execute(clip, 24.0, "360p", "auto", 30, unique_id="ram-test")
+	ui = res["ui"]["ti_vpreview"][0]
+	try:
+		assert res["result"][0] is clip, "the IMAGE passthrough must not copy or convert"
+		assert ui["frames"] == 4 and ui["depth"] == 8
+		for slug in _pstore.FORMATS:
+			assert len(_pstore.render(_pstore.get(ui["id"]), slug)[0]) > 0
+		assert scratch() == before, "a scratch dir survived render()"
+	finally:
+		_pstore.drop(ui["id"])
+	assert _pstore.get(ui["id"]) is None
+
+
+def test_video_preview_store_bounds_itself():
+	"""A RAM cache turns into a leak by holding every run, or by evicting itself."""
+	raw = b"\0" * 6144
+	a = _pstore.put(raw, 2, 32, 32, 8, 24.0, owner="n1")
+	b = _pstore.put(raw, 2, 32, 32, 8, 24.0, owner="n1")
+	try:
+		# Re-queuing one node swaps its clip instead of stacking a second copy.
+		assert _pstore.get(a) is None and _pstore.get(b) is not None
+		# ...but a different node keeps its own.
+		c = _pstore.put(raw, 2, 32, 32, 8, 24.0, owner="n2")
+		assert _pstore.get(b) is not None and _pstore.get(c) is not None
+		assert _pstore.drop(c) and not _pstore.drop(c)
+
+		# Expiry is swept lazily, on the next put.
+		d = _pstore.put(raw, 2, 32, 32, 8, 24.0, owner="n3", hold=1.0)
+		assert _pstore.get(d) is not None, "a clip must survive the sweep its own arrival triggers"
+		_pstore._SESSIONS[d]["touched"] -= 10
+		_pstore.put(raw, 2, 32, 32, 8, 24.0, owner="n4")
+		assert _pstore.get(d) is None
+
+		# Against a tight ceiling the newcomer evicts the others, never itself —
+		# otherwise put() hands back an id that is already dead.
+		cap = _pstore.MAX_BYTES
+		try:
+			_pstore.MAX_BYTES = len(raw) + 16
+			tight = _pstore.put(raw, 2, 32, 32, 8, 24.0, owner="n5")
+			assert _pstore.get(tight) is not None
+			_pstore.MAX_BYTES = len(raw) // 2
+			try:
+				_pstore.put(raw, 2, 32, 32, 8, 24.0, owner="n6")
+				raise AssertionError("a clip over the ceiling must raise, not vanish")
+			except RuntimeError as exc:
+				assert "ceiling" in str(exc)
+		finally:
+			_pstore.MAX_BYTES = cap
+	finally:
+		for sid in list(_pstore._SESSIONS):
+			_pstore.drop(sid)
+
+
+def _tone(seconds, rate=48000, channels=2):
+	"""A stereo test track, as ComfyUI hands one over."""
+	import numpy as np
+
+	t = np.arange(int(seconds * rate), dtype=np.float32) / rate
+	w = np.stack([np.sin(2 * np.pi * 440 * t) * 0.5,
+				  np.sin(2 * np.pi * 660 * t) * 0.5][:channels])
+	return {"waveform": torch.from_numpy(w).unsqueeze(0), "sample_rate": rate}
+
+
+def _stream_counts(data, ext, w, h):
+	"""Decode both streams and COUNT them.
+
+	Container duration fields are not comparable across muxers — webm often has
+	no per-stream duration and matroska rounds up to the last block — and the
+	question is exactly how many frames and samples came out.
+	"""
+	import json
+	import subprocess
+
+	with tempfile.TemporaryDirectory() as d:
+		p = os.path.join(d, "c." + ext)
+		with open(p, "wb") as fh:
+			fh.write(data)
+		meta = json.loads(subprocess.run(
+			[ffmpeg_exe().replace("ffmpeg", "ffprobe"), "-v", "error", "-show_entries",
+			 "stream=codec_type,codec_name,sample_rate,channels", "-of", "json", p],
+			capture_output=True, text=True).stdout)
+		got = {x["codec_type"]: x for x in meta["streams"]}
+		vid = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", p, "-map", "0:v:0",
+							  "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+							 capture_output=True).stdout
+		got["n_frames"] = len(vid) // (w * h * 3)
+		got["n_samples"] = 0
+		if "audio" in got:
+			ch = int(got["audio"]["channels"])
+			pcm = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", p, "-map", "0:a:0",
+								  "-f", "f32le", "-ac", str(ch), "-ar",
+								  str(got["audio"]["sample_rate"]), "pipe:1"],
+								 capture_output=True).stdout
+			got["n_samples"] = len(pcm) // (4 * ch)
+		return got
+
+
+def test_pack_audio_is_exact_and_interleaved():
+	"""f32le means interleaved. Getting it planar swaps the channels silently."""
+	import numpy as np
+
+	track = _tone(0.25)
+	a = _pstore.pack_audio(track)
+	assert (a["rate"], a["channels"], a["samples"]) == (48000, 2, 12000)
+	assert len(a["raw"]) == 12000 * 2 * 4
+	back = np.frombuffer(a["raw"], np.float32).reshape(-1, 2)
+	assert np.array_equal(back.T, track["waveform"][0].numpy())
+
+	# Absent, malformed and empty tracks are all "no audio", never a crash.
+	assert _pstore.pack_audio(None) is None
+	assert _pstore.pack_audio({}) is None
+	assert _pstore.pack_audio({"waveform": torch.zeros(1, 2, 0), "sample_rate": 48000}) is None
+	assert _pstore.pack_audio({"waveform": torch.zeros(1, 2, 8), "sample_rate": 0}) is None
+	assert _pstore.pack_audio(_tone(0.1, channels=1))["channels"] == 1
+
+
+def test_video_preview_fits_the_track_to_the_picture():
+	"""Audio must come out exactly as long as the video, from either direction.
+
+	The first attempt used `-shortest`, which cuts at the last video packet's
+	timestamp — the START of the final frame — so the track landed up to one
+	frame-duration short (19 ms measured) and by a different amount per
+	container. The fit is done in samples now.
+	"""
+	if ffmpeg_exe() is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	n, fps, rate = 12, 24.0, 48000
+	src = _gradient(n=n, h=32, w=48)
+	clip = torch.from_numpy(src.astype("float32") / 255.0)
+	want = round(n / fps * rate)
+	assert _pstore.fit_samples(n, fps, {"rate": rate}) == want
+
+	for seconds in (n / fps, n / fps * 0.4, n / fps * 2.5):
+		res = VideoPreview().execute(clip, fps, _tone(seconds), "360p", "auto", 30,
+									 unique_id="fit-test")
+		sess = _pstore.get(res["ui"]["ti_vpreview"][0]["id"])
+		try:
+			for slug in ("h264", "ffv1", "prores", "vp9"):
+				data, ext, _ = _pstore.render(sess, slug)
+				got = _stream_counts(data, ext, 48, 32)
+				drift = got["n_samples"] - want
+				assert got["n_frames"] == n, f"{slug}: {got['n_frames']} frames, wanted {n}"
+				# A lossy encoder may round the tail up to its own frame size; it
+				# must never come out short.
+				assert 0 <= drift <= 2048, f"{slug}: {drift:+d} samples off at {seconds:.2f}s in"
+		finally:
+			_pstore.drop(sess["id"])
+
+
+def test_video_preview_lossless_formats_carry_lossless_audio():
+	""""Bit-exact" has to mean the whole file, not only the picture."""
+	if ffmpeg_exe() is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	import io
+	import subprocess
+	import zipfile
+
+	import numpy as np
+
+	n, fps = 12, 24.0
+	src = _gradient(n=n, h=32, w=48)
+	raw, _, h, w, depth = _pstore.pack_frames(torch.from_numpy(src.astype("float32") / 255.0), "auto")
+	track = _pstore.pack_audio(_tone(n / fps))
+	sess = {"raw": raw, "n": n, "h": h, "w": w, "depth": depth, "fps": fps, "audio": track}
+	want = np.frombuffer(track["raw"], np.float32)
+
+	data, ext, _ = _pstore.render(sess, "ffv1")
+	got = _stream_counts(data, ext, w, h)
+	assert got["audio"]["codec_name"] == "pcm_f32le"      # matroska carries IEEE float
+	with tempfile.TemporaryDirectory() as d:
+		p = os.path.join(d, "c.mkv")
+		with open(p, "wb") as fh:
+			fh.write(data)
+		pcm = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", p, "-map", "0:a:0",
+							  "-f", "f32le", "-ac", "2", "-ar", "48000", "pipe:1"],
+							 capture_output=True).stdout
+		vid = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", p, "-map", "0:v:0",
+							  "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+							 capture_output=True).stdout
+	assert np.array_equal(np.frombuffer(pcm, np.float32), want), "ffv1 audio is not bit-exact"
+	assert np.array_equal(np.frombuffer(vid, np.uint8).reshape(-1, h, w, 3), src), \
+		"adding audio disturbed the video"
+
+	# A still sequence has no container for a track, so it rides along as a WAV.
+	z, ext, _ = _pstore.render(sess, "png")
+	with zipfile.ZipFile(io.BytesIO(z)) as zf:
+		assert "audio.wav" in zf.namelist() and len(zf.namelist()) == n + 1
+		wav = zf.read("audio.wav")
+	assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE"
+	assert np.array_equal(np.frombuffer(wav[wav.index(b"data") + 8:], np.float32), want)
+
+
+def test_video_preview_without_audio_writes_no_audio_stream():
+	"""The optional input has to stay optional — no silent track, no crash."""
+	if ffmpeg_exe() is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	clip = torch.from_numpy(_gradient(n=6, h=32, w=48).astype("float32") / 255.0)
+	res = VideoPreview().execute(clip, 24.0, None, "360p", "auto", 30, unique_id="silent")
+	ui = res["ui"]["ti_vpreview"][0]
+	try:
+		assert ui["audio"] is None
+		assert res["result"][1] is None, "the AUDIO passthrough must forward None untouched"
+		for slug in ("h264", "ffv1", "vp9", "prores"):
+			data, ext, _ = _pstore.render(_pstore.get(ui["id"]), slug)
+			assert "audio" not in _stream_counts(data, ext, 48, 32), f"{slug} grew an audio stream"
+	finally:
+		_pstore.drop(ui["id"])
+
+
+def test_image_preview_stills_are_exact_at_the_masters_depth():
+	"""png/tiff must round-trip a still exactly, at 8 AND at 16 bits.
+
+	Checked through ffmpeg, not PIL: PIL has no 48-bit RGB mode and hands back
+	uint8 for a 16-bit PNG without complaining, which would make this pass while
+	measuring nothing.
+	"""
+	if ffmpeg_exe() is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	import io
+	import subprocess
+
+	import numpy as np
+	from PIL import Image
+
+	src = _gradient(n=4, h=32, w=48)
+	clip = torch.from_numpy(src.astype("float32") / 255.0)
+
+	def read(data, ext, depth):
+		with tempfile.TemporaryDirectory() as d:
+			p = os.path.join(d, "x." + ext)
+			with open(p, "wb") as fh:
+				fh.write(data)
+			out = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", p, "-f", "rawvideo",
+								  "-pix_fmt", "rgb48le" if depth == 16 else "rgb24", "pipe:1"],
+								 capture_output=True).stdout
+		return np.frombuffer(out, "<u2" if depth == 16 else np.uint8).reshape(32, 48, 3)
+
+	raw, n, h, w, depth = _pstore.pack_frames(clip, "auto")
+	sess = {"raw": raw, "n": n, "h": h, "w": w, "depth": depth, "fps": 1.0}
+	assert depth == 8
+	for fmt in ("png", "tiff"):
+		for i in range(n):
+			data, ext, mime = _pstore.render_still(sess, i, fmt)
+			assert (ext, mime) == _pstore.STILL_FORMATS[fmt][:2]
+			assert np.array_equal(read(data, ext, 8), src[i]), f"{fmt} frame {i} is not exact"
+
+	deep = clip + 1.0 / 1000.0
+	raw16, n16, h16, w16, d16 = _pstore.pack_frames(deep, "auto")
+	s16 = {"raw": raw16, "n": n16, "h": h16, "w": w16, "depth": d16, "fps": 1.0}
+	assert d16 == 16
+	want = np.frombuffer(raw16, "<u2").reshape(n16, h16, w16, 3)[0]
+	for fmt in ("png", "tiff"):
+		data, ext, _ = _pstore.render_still(s16, 0, fmt)
+		assert np.array_equal(read(data, ext, 16), want), f"16-bit {fmt} is not exact"
+	png16 = _pstore.render_still(s16, 0, "png")[0]
+	assert png16[24] == 16, "a 16-bit master must produce a 16-bit PNG"
+	assert np.asarray(Image.open(io.BytesIO(png16))).dtype == np.uint8   # the PIL trap, pinned
+
+	# ...and an 8-bit master must NOT be inflated to 16.
+	assert _pstore.render_still(sess, 0, "png")[0][24] == 8
+
+	# An index off either end clamps instead of slicing past the master.
+	assert _pstore.frame_bytes(sess, 99)[1] == n - 1
+	assert _pstore.frame_bytes(sess, -5)[1] == 0
+
+
+def test_image_preview_holds_a_batch_and_zips_it():
+	"""The node's own contract, plus the all-frames download."""
+	if ffmpeg_exe() is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	import io
+	import zipfile
+
+	import numpy as np
+	from PIL import Image
+
+	src = _gradient(n=4, h=32, w=48)
+	clip = torch.from_numpy(src.astype("float32") / 255.0)
+	res = ImagePreview().execute(clip, "auto", 30, unique_id="img-test")
+	ui = res["ui"]["ti_ipreview"][0]
+	try:
+		assert res["result"][0] is clip, "the IMAGE passthrough must not copy or convert"
+		assert (ui["frames"], ui["width"], ui["height"], ui["depth"]) == (4, 48, 32, 8)
+		sess = _pstore.get(ui["id"])
+		assert sess is not None and sess["proxy"] == b"", "a still batch needs no video proxy"
+
+		for fmt, exact in (("png", True), ("tiff", True), ("jpg", False)):
+			z, ext, mime = _pstore.render_still_zip(sess, fmt, 95)
+			assert (ext, mime) == ("zip", "application/zip")
+			with zipfile.ZipFile(io.BytesIO(z)) as zf:
+				names = sorted(zf.namelist())
+				e = _pstore.STILL_FORMATS[fmt][0]
+				assert names == [f"{i:05d}.{e}" for i in range(4)]
+				if exact:
+					got = np.stack([np.asarray(Image.open(io.BytesIO(zf.read(nm))))[..., :3]
+									for nm in names])
+					assert np.array_equal(got, src), f"{fmt} zip is not bit-exact"
+	finally:
+		_pstore.drop(ui["id"])
+	assert _pstore.get(ui["id"]) is None
+
+
+# ------------------------------------------------------- tools/strip_png_metadata
+def _load_stripper():
+	"""Import tools/strip_png_metadata.py, which is a script rather than a node."""
+	import importlib.util
+
+	root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+	path = os.path.join(root, "tools", "strip_metadata.py")
+	spec = importlib.util.spec_from_file_location("ti_strip_meta", path)
+	mod = importlib.util.module_from_spec(spec)
+	spec.loader.exec_module(mod)
+	return mod
+
+
+def _png_with_workflow(path, meta=True, size=(24, 18)):
+	import numpy as np
+	from PIL import Image
+	from PIL.PngImagePlugin import PngInfo
+
+	rng = np.random.default_rng(len(path))
+	arr = rng.integers(0, 256, (size[1], size[0], 3), dtype=np.uint8)
+	info = PngInfo()
+	if meta:
+		info.add_text("prompt", '{"3":{"class_type":"KSampler"}}' * 20)
+		info.add_text("workflow", '{"nodes":[{"id":1}]}' * 200)
+	Image.fromarray(arr).save(path, pnginfo=info if meta else None)
+	return path
+
+
+def test_strip_png_metadata_removes_the_workflow_without_touching_pixels():
+	"""The whole point: a shared render must not carry the graph that made it.
+
+	And the pixels must survive exactly — this is chunk surgery, not a re-encode,
+	so the IDAT bytes have to come out byte-for-byte identical. Re-saving through
+	PIL would also drop the text and would silently recompress, which is why the
+	tool does not do that.
+	"""
+	import numpy as np
+	from PIL import Image
+
+	mod = _load_stripper()
+	with tempfile.TemporaryDirectory() as d:
+		p = _png_with_workflow(os.path.join(d, "shot.png"))
+		before = np.asarray(Image.open(p)).copy()
+		idat_before = [raw for k, raw in mod.read_chunks(p) if k == b"IDAT"]
+		assert set(dict(Image.open(p).text)) == {"prompt", "workflow"}
+
+		changed, removed = mod.strip_file(p)
+		assert changed and removed > 4000, f"removed only {removed} bytes"
+		assert dict(Image.open(p).text) == {}
+		assert np.array_equal(np.asarray(Image.open(p)), before), "pixels changed"
+		assert [raw for k, raw in mod.read_chunks(p) if k == b"IDAT"] == idat_before, \
+			"IDAT was rewritten — the image got recompressed"
+
+		# Running again is a no-op, and an already-clean file is never rewritten.
+		st = os.stat(p)
+		assert mod.strip_file(p) == (False, 0)
+		assert os.stat(p).st_mtime == st.st_mtime
+
+
+def test_strip_png_metadata_walks_a_directory_and_leaves_everything_else_alone():
+	"""A directory argument means every PNG under it — and nothing that isn't one."""
+	mod = _load_stripper()
+	with tempfile.TemporaryDirectory() as d:
+		os.makedirs(os.path.join(d, "a", "b"))
+		pngs = [_png_with_workflow(os.path.join(d, "top.png")),
+				_png_with_workflow(os.path.join(d, "a", "mid.PNG")),   # case-insensitive
+				_png_with_workflow(os.path.join(d, "a", "b", "deep.png"))]
+		with open(os.path.join(d, "notes.txt"), "w") as fh:
+			fh.write("not an image")
+		with open(os.path.join(d, "a", "photo.jpg"), "wb") as fh:
+			fh.write(b"\xff\xd8\xff\xe0 not really a jpeg either")
+
+		found = mod.collect([d])
+		assert sorted(map(os.path.basename, found)) == ["deep.png", "mid.PNG", "top.png"]
+
+		# --flat stops at the top level.
+		assert [os.path.basename(x) for x in mod.collect([d], recurse=False)] == ["top.png"]
+
+		# A path given twice is still only visited once.
+		assert len(mod.collect([pngs[0], d, pngs[0]])) == 3
+
+		for p in pngs:
+			assert mod.strip_file(p)[0]
+		assert all(k not in (b"tEXt", b"zTXt", b"iTXt")
+				   for p in pngs for k, _ in mod.read_chunks(p))
+
+
+def test_strip_metadata_removes_a_videos_workflow_without_re_encoding():
+	"""ComfyUI hides the graph in a container tag too — and it is bigger there.
+
+	Measured on a real session: 27 KB of workflow in a PNG, 174 KB in the mp4
+	from the same graph. The remux must use `-c copy`, so the encoded packets
+	come out byte-identical — checked here by hashing the copied streams, which
+	is what would change the instant someone "fixed" this into a re-encode.
+	"""
+	mod = _load_stripper()
+	exe = mod.ffmpeg_exe()
+	if exe is None:
+		print("    (skipped: no ffmpeg)")
+		return
+	import subprocess
+
+	def stream_md5(path):
+		out = subprocess.run([exe, "-v", "error", "-i", path, "-map", "0", "-c", "copy",
+							  "-f", "md5", "-"], capture_output=True, text=True)
+		return out.stdout.strip()
+
+	with tempfile.TemporaryDirectory() as d:
+		clip = os.path.join(d, "clip.mp4")
+		graph = '{"nodes":[{"id":1,"type":"KSampler"}]}' * 200
+		# use_metadata_tags is what lets the mp4 muxer write a non-standard tag at
+		# all — without it ffmpeg silently drops `workflow`, and this fixture
+		# would test nothing. It is also how ComfyUI gets the graph in there.
+		assert subprocess.run(
+			[exe, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=12:duration=1",
+			 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "use_metadata_tags",
+			 "-metadata", f"workflow={graph}", "-metadata", "prompt={\"3\":{}}", clip],
+			capture_output=True).returncode == 0
+
+		tags = mod.video_tags(clip)
+		assert tags is not None and "workflow" in tags and "prompt" in tags
+		before, size_before = stream_md5(clip), os.path.getsize(clip)
+
+		changed, removed = mod.strip_video(clip, check=True)
+		assert changed and removed > 5000
+		assert mod.video_tags(clip)["workflow"] == graph, "--check must not write"
+
+		changed, removed = mod.strip_file(clip)          # dispatches on the extension
+		assert changed
+		after_tags = mod.video_tags(clip)
+		assert "workflow" not in after_tags and "prompt" not in after_tags, after_tags
+		# Container brands and ffmpeg's own encoder line are all that may remain.
+		assert set(after_tags) <= mod.BENIGN_TAGS, after_tags
+		assert stream_md5(clip) == before, "the streams were re-encoded, not copied"
+		assert os.path.getsize(clip) < size_before
+
+		# A clip with nothing but benign tags is left alone.
+		assert mod.strip_file(clip) == (False, 0)
+
+	# ...and a directory sweep picks up both kinds.
+	with tempfile.TemporaryDirectory() as d:
+		_png_with_workflow(os.path.join(d, "a.png"))
+		open(os.path.join(d, "b.mp4"), "wb").close()
+		open(os.path.join(d, "c.txt"), "w").close()
+		assert sorted(os.path.basename(x) for x in mod.collect([d])) == ["a.png", "b.mp4"]
+
+
+def test_strip_png_metadata_refuses_what_it_cannot_read():
+	"""A non-PNG and a truncated PNG must be reported, never half-written."""
+	mod = _load_stripper()
+	with tempfile.TemporaryDirectory() as d:
+		jpg = os.path.join(d, "real.jpg")
+		with open(jpg, "wb") as fh:
+			fh.write(b"\xff\xd8\xff\xe0" + b"x" * 64)
+		body = open(jpg, "rb").read()
+		try:
+			mod.strip_file(jpg)
+			raise AssertionError("a .jpg must be refused")
+		except mod.NotPng as exc:
+			assert "not a PNG" in str(exc)
+		assert open(jpg, "rb").read() == body, "the refused file was modified"
+
+		src = _png_with_workflow(os.path.join(d, "src.png"))
+		raw = open(src, "rb").read()
+		cut = os.path.join(d, "cut.png")
+		with open(cut, "wb") as fh:
+			fh.write(raw[:len(raw) // 2])
+		try:
+			mod.strip_file(cut)
+			raise AssertionError("a truncated PNG must be refused")
+		except mod.NotPng as exc:
+			assert "truncated" in str(exc)
+		assert not any(f.endswith(".stripping") for f in os.listdir(d)), "temp file left behind"
 
 
 # ------------------------------------------------------------------ runner
