@@ -13,6 +13,12 @@ empty (None transform) are skipped.
 A single source image takes every crop composited onto it (N faces -> one
 photo). A source batch of the same length as the crops is paired frame to
 frame instead (N video frames -> N crops), which is what Mask Bbox Crop emits.
+
+It also reassembles a TILING: Divide · Rectangle emits one transform per tile
+rather than one transform with a row per frame, and both are accepted, so
+`tiles -> (whatever you generate) -> here` puts the frame back together. Leave
+feather at 0 there — the tiles are meant to abut, and a feathered box alpha
+would let the untouched source bleed back through every seam.
 """
 
 from __future__ import annotations
@@ -96,7 +102,18 @@ class MaskCropPasteBack(TiNode):
 		src = torch.cat(
 			[s if s.dim() == 4 else s.unsqueeze(0) for s in ilist], dim=0
 		)                                    # [S,H,W,C]
-		info = _first(crop_info)
+		# Two shapes of crop_info arrive here. A per-FRAME crop (Mask Bbox Crop,
+		# Load Masks) is ONE transform whose items[] runs down the clip. A per-TILE
+		# crop (Divide · Rectangle) is a LIST of transforms, one per tile, each
+		# holding its own single placement — so take item 0 from each instead of
+		# reading items[] off the first one, which would stack every tile in the
+		# first tile's corner.
+		infos = crop_info if isinstance(crop_info, list) else [crop_info]
+		infos = [ci for ci in infos if isinstance(ci, dict)]
+		if not infos:
+			raise RuntimeError("Paste Back: no crop_info — wire the crop node's transform.")
+		per_tile = len(infos) > 1
+		info = infos[0]
 		feather = int(_first(feather, 0))
 		feather_mode = _first(feather_mode, "gaussian")
 		offset = int(_first(frame_offset, 0) or 0)
@@ -116,7 +133,8 @@ class MaskCropPasteBack(TiNode):
 				)
 
 		out = src.clone()
-		items = info["items"]
+		items = ([ci["items"][0] if ci.get("items") else None for ci in infos]
+				 if per_tile else info["items"])
 		n = min(len(items), crop_batch.shape[0])
 
 		S = out.shape[0]
@@ -146,9 +164,17 @@ class MaskCropPasteBack(TiNode):
 			y0, x0, h, w = it["y0"], it["x0"], it["h"], it["w"]
 			oy, ox, nh, nw = it["oy"], it["ox"], it["nh"], it["nw"]
 
-			# pull the placed region out of the size x size canvas
-			region = crop_batch[i, oy:oy + nh, ox:ox + nw, :]      # [nh,nw,C]
-			rescaled = (nh != h or nw != w)
+			# A crop can come back at a DIFFERENT resolution than it left at: a
+			# tile is often upscaled to the model's working size and generated
+			# there. When the transform covers the WHOLE canvas (no letterbox,
+			# no rescale of its own — which is what a tiling emits), the incoming
+			# image IS the region whatever its size, and gets resampled back into
+			# its slot below. Otherwise slice the placed region as before.
+			whole = (oy == 0 and ox == 0 and nh == h and nw == w)
+			resized_crop = whole and tuple(crop_batch.shape[1:3]) != (h, w)
+			region = (crop_batch[i] if resized_crop
+					  else crop_batch[i, oy:oy + nh, ox:ox + nw, :])
+			rescaled = tuple(region.shape[:2]) != (h, w)
 			if rescaled:
 				region = region.permute(2, 0, 1)[None]
 				region = F.interpolate(region, size=(h, w), mode="bilinear", align_corners=False)
@@ -157,9 +183,13 @@ class MaskCropPasteBack(TiNode):
 
 			# alpha: mask region warped back, else solid box
 			if mask_batch is not None and i < mask_batch.shape[0]:
-				mr = mask_batch[i, oy:oy + nh, ox:ox + nw]         # [nh,nw]
-				if rescaled:
-					mr = F.interpolate(mr[None, None], size=(h, w),
+				mb = mask_batch[i]
+				# The mask may be at the crop's ORIGINAL size even when the image
+				# came back bigger, so decide by its own shape, not the image's.
+				mr = mb if (whole and tuple(mb.shape) != (nh, nw)) \
+					else mb[oy:oy + nh, ox:ox + nw]
+				if tuple(mr.shape) != (h, w):
+					mr = F.interpolate(mr[None, None].float(), size=(h, w),
 									   mode="bilinear", align_corners=False)[0, 0]
 			else:
 				mr = torch.ones(h, w, dtype=region.dtype, device=region.device)
