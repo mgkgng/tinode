@@ -62,6 +62,7 @@ from tinode.nodes.image import _preview_store as _pstore  # noqa: E402
 from tinode.nodes.image._video_io import colour_flags, encode as _vio_encode, ffmpeg_exe  # noqa: E402
 from tinode.nodes.image.video_preview import VideoPreview  # noqa: E402
 from tinode.nodes.image.image_preview import ImagePreview  # noqa: E402
+from tinode.nodes.sampling.seed_range_noise import Noise_SeedRange, seeds_for  # noqa: E402
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -3383,6 +3384,94 @@ def test_strip_png_metadata_refuses_what_it_cannot_read():
 		except mod.NotPng as exc:
 			assert "truncated" in str(exc)
 		assert not any(f.endswith(".stripping") for f in os.listdir(d)), "temp file left behind"
+
+
+# ------------------------------------------------------------- seed range noise
+def _core_prepare_noise():
+	"""comfy.sample.prepare_noise — the behaviour Seed Range Noise must match.
+
+	Compared against core rather than a copy of its formula on purpose: the
+	point is that our items stay interchangeable with core's, so if core ever
+	changes how it draws noise, these tests should fail and tell us.
+
+	ComfyUI's root is not on the test path (only custom_nodes/ is, so `import
+	tinode` works), so it is added here and taken straight back out. Leaving it
+	makes `folder_paths` importable, and nodes that probe for it — the video
+	preview asset path — then take their ComfyUI-present branch for every test
+	that follows, which quietly changes what the rest of the suite exercises.
+	"""
+	root = os.path.dirname(os.path.dirname(os.path.dirname(
+		os.path.dirname(os.path.abspath(__file__)))))
+	added = root not in sys.path
+	if added:
+		sys.path.insert(0, root)
+	try:
+		import comfy.sample  # noqa: PLC0415 — deliberately local, see above
+		return comfy.sample.prepare_noise
+	finally:
+		if added:
+			sys.path.remove(root)
+		sys.modules.pop("folder_paths", None)
+
+
+def test_seed_range_noise_item_matches_a_solo_run():
+	"""The reason the node exists: item i's NOISE must equal a solo run at seed+i.
+
+	Noise only — the rendered image still shifts slightly if you later re-run a
+	candidate at a different batch size, because the UNet picks different GPU
+	kernels per batch size. See the node docstring. If this drifts, a
+	candidate's seed stops being a portable identity and we are back to
+	carrying (seed, batch_index) pairs around.
+	"""
+	prepare_noise = _core_prepare_noise()
+	seed = 740016770880953
+	batch = Noise_SeedRange(seed).generate_noise({"samples": torch.zeros(5, 4, 64, 64)})
+	assert batch.shape == (5, 4, 64, 64)
+	for i in range(5):
+		solo = prepare_noise(torch.zeros(1, 4, 64, 64), seed + i)
+		assert torch.equal(batch[i:i + 1], solo), f"item {i} != solo run at seed+{i}"
+
+
+def test_seed_range_noise_is_not_core_batching():
+	"""Guards the premise: core slices one stream, so its item 1 is NOT seed+1.
+
+	Should core ever change to per-item reseeding, this test fails and the node
+	becomes redundant — that is worth being told about.
+	"""
+	prepare_noise = _core_prepare_noise()
+	seed = 740016770880953
+	core_batch = prepare_noise(torch.zeros(5, 4, 64, 64), seed)
+	solo = prepare_noise(torch.zeros(1, 4, 64, 64), seed + 1)
+	assert not torch.equal(core_batch[1:2], solo)
+
+
+def test_seed_range_noise_honours_batch_index():
+	# After Latent From Batch picks item 3, it must still be drawn from seed+3 —
+	# otherwise "select a candidate, then continue it" silently changes the image.
+	prepare_noise = _core_prepare_noise()
+	seed = 740016770880953
+	picked = Noise_SeedRange(seed).generate_noise(
+		{"samples": torch.zeros(1, 4, 64, 64), "batch_index": [3]}
+	)
+	assert torch.equal(picked, prepare_noise(torch.zeros(1, 4, 64, 64), seed + 3))
+
+
+def test_seed_range_noise_seed_mapping():
+	assert seeds_for({"samples": torch.zeros(3, 4, 8, 8)}, 100) == [100, 101, 102]
+	# A picked latent carries the positions it came from, not 0..n.
+	assert seeds_for({"samples": torch.zeros(2, 4, 8, 8), "batch_index": [3, 7]}, 100) == [103, 107]
+
+
+def test_seed_range_noise_refuses_nested_latents():
+	class _Nested(torch.Tensor):
+		is_nested = True
+
+	samples = torch.zeros(1, 4, 8, 8).as_subclass(_Nested)
+	try:
+		Noise_SeedRange(0).generate_noise({"samples": samples})
+		raise AssertionError("a nested latent must be refused, not silently mishandled")
+	except RuntimeError as exc:
+		assert "nested" in str(exc)
 
 
 # ------------------------------------------------------------------ runner

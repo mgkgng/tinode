@@ -1,0 +1,233 @@
+{
+  "ckpt": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "sd15-pruned-emaonly-fp16.safetensors"
+    }
+  },
+  "pos": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "ckpt",
+        1
+      ],
+      "text": "a cozy cabin in a snowy forest, warm window light, painterly, detailed"
+    }
+  },
+  "neg": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "ckpt",
+        1
+      ],
+      "text": "blurry, low quality, deformed"
+    }
+  },
+  "latent": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1
+    }
+  },
+  "noise": {
+    "class_type": "TI_SeedRangeNoise",
+    "inputs": {
+      "seed": 123
+    }
+  },
+  "empty": {
+    "class_type": "DisableNoise",
+    "inputs": {}
+  },
+  "sampler": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "guider": {
+    "class_type": "CFGGuider",
+    "inputs": {
+      "model": [
+        "ckpt",
+        0
+      ],
+      "positive": [
+        "pos",
+        0
+      ],
+      "negative": [
+        "neg",
+        0
+      ],
+      "cfg": 7.0
+    }
+  },
+  "sched": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": [
+        "ckpt",
+        0
+      ],
+      "scheduler": "normal",
+      "steps": 10,
+      "denoise": 1.0
+    }
+  },
+  "split": {
+    "class_type": "SplitSigmas",
+    "inputs": {
+      "sigmas": [
+        "sched",
+        0
+      ],
+      "step": 4
+    }
+  },
+  "full": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "noise",
+        0
+      ],
+      "guider": [
+        "guider",
+        0
+      ],
+      "sampler": [
+        "sampler",
+        0
+      ],
+      "sigmas": [
+        "sched",
+        0
+      ],
+      "latent_image": [
+        "latent",
+        0
+      ]
+    }
+  },
+  "stage1": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "noise",
+        0
+      ],
+      "guider": [
+        "guider",
+        0
+      ],
+      "sampler": [
+        "sampler",
+        0
+      ],
+      "sigmas": [
+        "split",
+        0
+      ],
+      "latent_image": [
+        "latent",
+        0
+      ]
+    }
+  },
+  "stage2": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "empty",
+        0
+      ],
+      "guider": [
+        "guider",
+        0
+      ],
+      "sampler": [
+        "sampler",
+        0
+      ],
+      "sigmas": [
+        "split",
+        1
+      ],
+      "latent_image": [
+        "stage1",
+        0
+      ]
+    }
+  },
+  "lat_full": {
+    "class_type": "SaveLatent",
+    "inputs": {
+      "samples": [
+        "full",
+        0
+      ],
+      "filename_prefix": "unit/full"
+    }
+  },
+  "lat_staged": {
+    "class_type": "SaveLatent",
+    "inputs": {
+      "samples": [
+        "stage2",
+        0
+      ],
+      "filename_prefix": "unit/staged"
+    }
+  },
+  "dec_full": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "full",
+        0
+      ],
+      "vae": [
+        "ckpt",
+        2
+      ]
+    }
+  },
+  "dec_staged": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "stage2",
+        0
+      ],
+      "vae": [
+        "ckpt",
+        2
+      ]
+    }
+  },
+  "img_full": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "dec_full",
+        0
+      ],
+      "filename_prefix": "unit/full"
+    }
+  },
+  "img_staged": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "dec_staged",
+        0
+      ],
+      "filename_prefix": "unit/staged"
+    }
+  }
+}
