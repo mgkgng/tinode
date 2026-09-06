@@ -63,6 +63,9 @@ from tinode.nodes.image._video_io import colour_flags, encode as _vio_encode, ff
 from tinode.nodes.image.video_preview import VideoPreview  # noqa: E402
 from tinode.nodes.image.image_preview import ImagePreview  # noqa: E402
 from tinode.nodes.sampling.seed_range_noise import Noise_SeedRange, seeds_for  # noqa: E402
+from tinode.nodes.sampling.sigma_segment import SigmaSegment, slice_sigmas  # noqa: E402
+from tinode.nodes.sampling.candidate_select import CandidateSelect  # noqa: E402
+from tinode.nodes.sampling.noise_rotate import NoiseRotate, rotate_residual  # noqa: E402
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -3472,6 +3475,225 @@ def test_seed_range_noise_refuses_nested_latents():
 		raise AssertionError("a nested latent must be refused, not silently mishandled")
 	except RuntimeError as exc:
 		assert "nested" in str(exc)
+
+
+# ---------------------------------------------------------------- sigma segment
+def test_sigma_segment_keeps_the_shared_boundary():
+	"""Adjacent stages must overlap on one sigma, or the hand-off is not seamless.
+
+	0->4 and 4->9 both contain sigmas[4]: the second stage has to be told the
+	noise level it resumes at, not merely the sigmas that remain.
+	"""
+	sig = list(range(21))                      # stand-in for a 20-step schedule
+	a = slice_sigmas(sig, 0, 4)
+	b = slice_sigmas(sig, 4, 9)
+	assert a == [0, 1, 2, 3, 4]
+	assert b == [4, 5, 6, 7, 8, 9]
+	assert a[-1] == b[0]
+	# a segment runs (end - start) steps, holding one more sigma than that
+	assert len(a) - 1 == 4 and len(b) - 1 == 5
+
+
+def test_sigma_segment_indices_stay_absolute():
+	# The whole point: asking for 9 means step 9 of the ORIGINAL schedule, with no
+	# regard for how the earlier stages were cut. Chained SplitSigmas would need 5.
+	sig = list(range(21))
+	assert slice_sigmas(sig, 9, 14)[0] == 9
+
+
+def test_sigma_segment_refuses_bad_ranges():
+	sig = list(range(21))                      # 20 steps, indices 0..20
+	for start, end in [(4, 4), (9, 4), (0, 21), (-1, 5)]:
+		try:
+			slice_sigmas(sig, start, end)
+			raise AssertionError(f"({start},{end}) must be refused, not clamped")
+		except ValueError:
+			pass
+	# The two invalid orderings are different mistakes and must not share a
+	# message — "one sigma performs no sampling" does not explain a swapped pair.
+	try:
+		slice_sigmas(sig, 9, 4)
+	except ValueError as exc:
+		assert "before" in str(exc) and "swapped" in str(exc)
+	try:
+		slice_sigmas(sig, 4, 4)
+	except ValueError as exc:
+		assert "one sigma" in str(exc)
+	# the exact end of the schedule is still valid
+	assert len(slice_sigmas(sig, 14, 20)) == 7
+
+
+def test_sigma_segment_node_reports_start_sigma():
+	seg, start_sigma = SigmaSegment().execute([14.61, 10.74, 8.08, 6.20, 4.85, 3.86], 2, 4)
+	assert seg == [8.08, 6.20, 4.85]
+	assert abs(start_sigma - 8.08) < 1e-6
+
+
+
+# ------------------------------------------------------------ candidate select
+def test_candidate_select_reports_the_candidates_own_seed():
+	"""The seed must match Seed Range Noise's mapping, or the identity is a lie."""
+	lat = {"samples": torch.arange(5 * 4 * 8 * 8, dtype=torch.float32).reshape(5, 4, 8, 8)}
+	out, _dn, img, seed, idx = CandidateSelect().execute(lat, index=2, origin_seed=100)["result"]
+	assert seed == 102 and idx == 2
+	assert torch.equal(out["samples"][0], lat["samples"][2])
+
+
+def test_candidate_select_stamps_batch_index():
+	# Without this, regenerating noise from the picked latent silently lands on a
+	# different candidate's seed.
+	lat = {"samples": torch.zeros(4, 4, 8, 8)}
+	out = CandidateSelect().execute(lat, index=3)["result"][0]
+	assert out["batch_index"] == [3]
+	# and an already-sliced latent keeps its ORIGINAL position, not the new one
+	nested = CandidateSelect().execute(
+		{"samples": torch.zeros(2, 4, 8, 8), "batch_index": [7, 9]}, index=1)["result"][0]
+	assert nested["batch_index"] == [9]
+
+
+
+def test_candidate_select_slices_the_denoised_pair_too():
+	"""Branching again needs BOTH of a sampler's outputs for the SAME candidate.
+
+	Selecting them on two separate nodes would let the two indices drift apart,
+	and the mismatch would be invisible — you would rotate one candidate's noise
+	around another's prediction.
+	"""
+	lat = {"samples": torch.arange(3 * 4 * 8 * 8, dtype=torch.float32).reshape(3, 4, 8, 8)}
+	den = {"samples": torch.ones(3, 4, 8, 8) * torch.arange(3).view(3, 1, 1, 1)}
+	out, dn, _, _, _ = CandidateSelect().execute(lat, index=2, denoised=den)["result"]
+	assert torch.equal(out["samples"][0], lat["samples"][2])
+	assert float(dn["samples"].mean()) == 2.0
+
+	# a mismatched pair cannot have come from one run, and must not be guessed at
+	try:
+		CandidateSelect().execute(lat, index=0, denoised={"samples": torch.zeros(5, 4, 8, 8)})
+		raise AssertionError("a mismatched denoised batch must be refused")
+	except RuntimeError as exc:
+		assert "SAME sampler" in str(exc)
+
+
+def test_candidate_select_clamps_and_reports_where_it_landed():
+	# A cursor should stop at the end, not raise — but it must say where it is.
+	lat = {"samples": torch.zeros(3, 4, 8, 8)}
+	res = CandidateSelect().execute(lat, index=99, origin_seed=50)
+	out, _dn, _im, seed, idx = res["result"]
+	assert idx == 2 and seed == 52
+	ui = res["ui"]["ti_candidate"][0]
+	assert (ui["index"], ui["count"], ui["seed"]) == (2, 3, 52)
+
+
+def test_candidate_select_survives_a_missing_preview_grid():
+	# The thumbnails need ComfyUI's folder_paths, which the suite runs without.
+	# Selection is the node's job; the grid is decoration and must not break it.
+	lat = {"samples": torch.zeros(2, 4, 8, 8)}
+	imgs = torch.zeros(2, 8, 8, 3)
+	res = CandidateSelect().execute(lat, index=1, images=imgs, origin_seed=10)
+	assert res["result"][3] == 11
+	assert res["ui"]["ti_candidate"][0]["thumbs"] == []
+
+
+def test_candidate_select_picks_the_matching_image():
+	lat = {"samples": torch.zeros(3, 4, 8, 8)}
+	imgs = torch.stack([torch.full((8, 8, 3), float(i)) for i in range(3)])
+	img = CandidateSelect().execute(lat, index=1, images=imgs)["result"][2]
+	assert img.shape[0] == 1 and float(img.mean()) == 1.0
+	# images are optional: without them the slot is simply empty
+	assert CandidateSelect().execute(lat, index=1)["result"][2] is None
+
+
+def test_candidate_select_refuses_an_empty_batch():
+	try:
+		CandidateSelect().execute({"samples": torch.zeros(0, 4, 8, 8)})
+		raise AssertionError("an empty batch must be refused")
+	except RuntimeError as exc:
+		assert "empty" in str(exc)
+
+
+
+# ----------------------------------------------------------------- noise rotate
+def _parent(sigma=4.8557, seed=0):
+	"""A stand-in checkpoint: x = x0 + sigma*eps, the shape a stopped sampler emits."""
+	g = torch.Generator().manual_seed(seed)
+	x0 = torch.randn(1, 4, 16, 16, generator=g) * 0.5      # a hedged prediction
+	eps = torch.randn(1, 4, 16, 16, generator=g)
+	return {"samples": x0 + sigma * eps}, {"samples": x0}
+
+
+def test_noise_rotate_preserves_the_noise_level():
+	"""The invariant the whole method rests on: theta turns, it does not inflate.
+
+	If ||x - x0|| grows with theta, the continuation runs a schedule expecting
+	less noise than it gets and under-denoises — variation strength and quality
+	loss confounded in one dial.
+	"""
+	lat, den = _parent()
+	before = (lat["samples"] - den["samples"]).std().item()
+	for theta in (0, 10, 30, 45, 90):
+		out = NoiseRotate().execute(lat, den, theta, 3, 500)[0]["samples"]
+		for i in range(out.shape[0]):
+			after = (out[i:i+1] - den["samples"]).std().item()
+			assert abs(after / before - 1) < 0.06, f"theta={theta} moved the magnitude"
+
+
+def test_noise_rotate_theta_zero_is_the_exact_parent():
+	lat, den = _parent()
+	out = NoiseRotate().execute(lat, den, 0.0, 2, 7)[0]["samples"]
+	for i in range(out.shape[0]):
+		assert torch.allclose(out[i:i+1], lat["samples"], atol=1e-6)
+
+
+def test_noise_rotate_divergence_grows_with_theta():
+	lat, den = _parent()
+	d = []
+	for theta in (0, 10, 30, 60, 90):
+		v = NoiseRotate().execute(lat, den, theta, 1, 11)[0]["samples"]
+		d.append((v - lat["samples"]).abs().mean().item())
+	assert d == sorted(d), f"divergence must be monotonic in theta, got {d}"
+	assert d[0] == 0.0
+
+
+def test_noise_rotate_descendants_are_individually_seeded():
+	# Variant i comes from variation_seed + i, mirroring Seed Range Noise, so a
+	# descendant you liked can be reproduced on its own.
+	lat, den = _parent()
+	batch = NoiseRotate().execute(lat, den, 30.0, 3, 900)[0]["samples"]
+	for i in range(3):
+		solo = NoiseRotate().execute(lat, den, 30.0, 1, 900 + i)[0]["samples"]
+		assert torch.allclose(batch[i:i+1], solo, atol=1e-6)
+	assert not torch.allclose(batch[0:1], batch[1:2])
+
+
+def test_noise_rotate_drops_the_parents_batch_index():
+	# Descendants are a new lineage; keeping the parent's slot would send anything
+	# that regenerates noise to the wrong seed.
+	lat, den = _parent()
+	lat["batch_index"] = [3]
+	assert "batch_index" not in NoiseRotate().execute(lat, den, 20.0, 2, 0)[0]
+
+
+def test_noise_rotate_refuses_impossible_inputs():
+	lat, den = _parent()
+	# a finished latent has no residual left to turn
+	try:
+		NoiseRotate().execute({"samples": den["samples"].clone()}, den, 30.0, 2, 0)
+		raise AssertionError("a zero residual must be refused")
+	except RuntimeError as exc:
+		assert "unresolved noise" in str(exc)
+	# mismatched shapes mean the two inputs came from different samplers
+	try:
+		NoiseRotate().execute(lat, {"samples": torch.zeros(1, 4, 8, 8)}, 30.0, 2, 0)
+		raise AssertionError("a shape mismatch must be refused")
+	except RuntimeError as exc:
+		assert "SAME sampler" in str(exc)
+	# and a batch has no single parent to branch from
+	try:
+		NoiseRotate().execute({"samples": torch.zeros(3, 4, 16, 16)},
+							  {"samples": torch.ones(3, 4, 16, 16)}, 30.0, 2, 0)
+		raise AssertionError("a batched parent must be refused")
+	except RuntimeError as exc:
+		assert "Candidate Select" in str(exc)
+
 
 
 # ------------------------------------------------------------------ runner
