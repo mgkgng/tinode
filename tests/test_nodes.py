@@ -3653,6 +3653,76 @@ def test_noise_rotate_divergence_grows_with_theta():
 	assert d[0] == 0.0
 
 
+def test_noise_rotate_theta_is_the_cosine_similarity():
+	"""The widget number is the angle actually turned — that is the whole claim.
+
+	Holds because `new` is drawn independently of `eps`, so the two are
+	near-orthogonal and cos_sim(eps, eps_var) collapses to cos(theta).
+	"""
+	lat, den = _parent()
+	eps = (lat["samples"] - den["samples"]).flatten()
+	for theta in (10, 30, 45, 90, 135):
+		v = NoiseRotate().execute(lat, den, float(theta), 1, 4)[0]["samples"]
+		ev = (v - den["samples"]).flatten()
+		cos = float(ev @ eps / (ev.norm() * eps.norm()))
+		assert abs(cos - math.cos(math.radians(theta))) < 0.05, \
+			f"theta={theta} turned {math.degrees(math.acos(max(-1, min(1, cos)))):.1f} deg"
+
+
+def test_noise_rotate_past_ninety_collapses_the_siblings():
+	"""Beyond 90 the descendants march away from the parent but back together.
+
+	Sibling angle is acos(cos^2 theta), so it peaks at 90 and closes again — the
+	reason 90 is the working maximum even though the widget now allows the whole
+	circle.
+	"""
+	lat, den = _parent()
+
+	def spread(theta):
+		out = NoiseRotate().execute(lat, den, float(theta), 2, 21)[0]["samples"]
+		a = (out[0:1] - den["samples"]).flatten()
+		b = (out[1:2] - den["samples"]).flatten()
+		return float(a @ b / (a.norm() * b.norm()))
+
+	# cos of the sibling angle: 1 = identical, 0 = maximally spread.
+	assert spread(90) < 0.15, "siblings should be near-orthogonal at 90"
+	assert spread(135) > spread(90), "past 90 siblings close back up"
+	assert spread(179) > spread(135)
+
+
+def test_noise_rotate_at_one_eighty_ignores_the_variation_seed():
+	"""sin(180) = 0, so `new` drops out: every descendant is the same negative.
+
+	Worth pinning — a user who winds theta past 180 expecting more variety gets
+	N copies of one image, and that surprise should be a documented property
+	rather than a bug report.
+	"""
+	lat, den = _parent()
+	a = NoiseRotate().execute(lat, den, 180.0, 3, 1)[0]["samples"]
+	b = NoiseRotate().execute(lat, den, 180.0, 3, 999999)[0]["samples"]
+	assert torch.allclose(a, b, atol=1e-5), "the variation seed still mattered at 180"
+	for i in range(1, a.shape[0]):
+		assert torch.allclose(a[0:1], a[i:i+1], atol=1e-5), "descendants differ at 180"
+	# and that one image is the exact negative of the residual
+	expected = den["samples"] - (lat["samples"] - den["samples"])
+	assert torch.allclose(a[0:1], expected, atol=1e-5)
+
+
+def test_noise_rotate_negative_theta_mirrors_positive():
+	"""-theta has the same strength as +theta but is a different descendant."""
+	lat, den = _parent()
+	eps = (lat["samples"] - den["samples"]).flatten()
+	pos = NoiseRotate().execute(lat, den, 30.0, 1, 55)[0]["samples"]
+	neg = NoiseRotate().execute(lat, den, -30.0, 1, 55)[0]["samples"]
+
+	def cos_to_parent(v):
+		ev = (v - den["samples"]).flatten()
+		return float(ev @ eps / (ev.norm() * eps.norm()))
+
+	assert abs(cos_to_parent(pos) - cos_to_parent(neg)) < 0.02, "equal strength"
+	assert not torch.allclose(pos, neg, atol=1e-3), "but a different descendant"
+
+
 def test_noise_rotate_descendants_are_individually_seeded():
 	# Variant i comes from variation_seed + i, mirroring Seed Range Noise, so a
 	# descendant you liked can be reproduced on its own.

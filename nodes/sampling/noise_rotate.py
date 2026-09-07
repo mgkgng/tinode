@@ -25,9 +25,37 @@ Scaling `new` to the residual's OWN magnitude rather than assuming a unit
 variance is what keeps that true at any checkpoint, and means the node needs
 neither sigma nor a latent-space conversion.
 
+theta is an angle, and it is exactly the cosine similarity between the old
+residual and the new one: cos_sim(eps, eps_var) = cos(theta). That identity holds
+because `new` is drawn independently of `eps`, and two independent gaussians in
+D dimensions are near-orthogonal (cos ~ 1/sqrt(D), about 0.6% at 4x113x64). So
+the number on the widget is the angle actually turned, to within a fraction of a
+degree — and it gets more exact at higher resolution, not less.
+
     theta = 0    exact continuation (the control)
     10-45        the useful working range
     90           fresh direction at the same noise level, x0_pred still kept
+
+theta steers TWO things at once, and they are not the same number. The angle
+from the parent is theta. The angle between two SIBLINGS is wider:
+
+    angle(variant_i, variant_j) = acos(cos^2 theta)
+
+    theta:           0    10     30     45     60     90    120    150    180
+    from parent:   0.0  10.1   30.2   45.3   60.2   90.0  119.8  149.8  180.0
+    between sibs:  0.0  14.3   41.8   60.4   75.9   90.4   76.0   41.8    0.0
+
+Siblings are always further from each other than from the parent, and their
+spread PEAKS at 90 and then closes again. That is the real reason 90 is the
+working maximum: past it the descendants keep marching away from the parent
+while collapsing back together, and at 180 the term sin(theta)*new vanishes
+entirely — `variation_seed` stops mattering, every descendant is the same
+image, and that image is x0_pred minus the residual, the exact negative of the
+continuation. At 360 you are back at the original. Values beyond 90 are allowed
+because they are interesting to look at, not because they produce more variety.
+
+Negative angles are a free extra axis: cos is even and sin is odd, so -theta has
+the identical strength as +theta but is a different descendant.
 
 Measured on SD1.5: branch LATE. At sigma 4.86 (96% noise) x0_pred is barely
 committed, so rotating re-rolls the composition rather than varying it. Deeper in
@@ -75,10 +103,19 @@ class NoiseRotate(TiNode):
 				"denoised": ("LATENT", {"tooltip":
 					"`denoised_output` from that same sampler: what the model "
 					"currently believes the image is becoming. This is preserved."}),
-				"theta": ("FLOAT", {"default": 25.0, "min": 0.0, "max": 90.0,
+				# The full circle is allowed, not just the useful quadrant: 90 is
+				# where sibling spread peaks, but seeing what lies past it is
+				# worth more than a guard rail. See the module docstring.
+				"theta": ("FLOAT", {"default": 25.0, "min": -360.0, "max": 360.0,
 					"step": 0.5, "tooltip":
-					"How far to turn the unresolved noise. 0 = exact continuation, "
-					"10-45 useful, 90 = a fresh direction at the same noise level."}),
+					"Angle to turn the unresolved noise — literally the cosine "
+					"similarity to the original residual, cos_sim = cos(theta). "
+					"0 = exact continuation, 10-45 useful, 90 = uncorrelated "
+					"(and the widest spread between descendants). Past 90 the "
+					"descendants move further from the parent but back TOWARD "
+					"each other; at 180 the variation seed stops mattering and "
+					"they collapse to one image, the negative of the "
+					"continuation. -theta mirrors +theta at equal strength."}),
 				"count": ("INT", {"default": 4, "min": 1, "max": 64, "tooltip":
 					"How many descendants. They come out as a batch — pick one "
 					"with Candidate Select."}),
