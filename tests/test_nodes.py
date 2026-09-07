@@ -65,7 +65,9 @@ from tinode.nodes.image.image_preview import ImagePreview  # noqa: E402
 from tinode.nodes.sampling.seed_range_noise import Noise_SeedRange, seeds_for  # noqa: E402
 from tinode.nodes.sampling.sigma_segment import SigmaSegment, slice_sigmas  # noqa: E402
 from tinode.nodes.sampling.candidate_select import CandidateSelect  # noqa: E402
-from tinode.nodes.sampling.noise_rotate import NoiseRotate, rotate_residual  # noqa: E402
+from tinode.nodes.sampling.noise_rotate import (  # noqa: E402
+	NoiseRotate, rotate_family,
+)
 from tinode.nodes.sampling.step_stamp import (  # noqa: E402
 	StampStep, ResumeStep, stamped_step,
 )
@@ -3682,11 +3684,17 @@ def test_stamp_step_keeps_the_other_latent_keys():
 
 
 # ----------------------------------------------------------------- noise rotate
-def _parent(sigma=4.8557, seed=0):
-	"""A stand-in checkpoint: x = x0 + sigma*eps, the shape a stopped sampler emits."""
+def _parent(sigma=4.8557, seed=0, size=16):
+	"""A stand-in checkpoint: x = x0 + sigma*eps, the shape a stopped sampler emits.
+
+	`size` matters for the angle tests. Sibling separation is exact only in
+	expectation: the per-child directions are independent draws, so their mutual
+	angles carry a 1/sqrt(D) sampling error — about 3% at 16x16 but 0.8% at
+	64x64, and 0.6% at a real 4x113x64 latent.
+	"""
 	g = torch.Generator().manual_seed(seed)
-	x0 = torch.randn(1, 4, 16, 16, generator=g) * 0.5      # a hedged prediction
-	eps = torch.randn(1, 4, 16, 16, generator=g)
+	x0 = torch.randn(1, 4, size, size, generator=g) * 0.5      # a hedged prediction
+	eps = torch.randn(1, 4, size, size, generator=g)
 	return {"samples": x0 + sigma * eps}, {"samples": x0}
 
 
@@ -3793,15 +3801,103 @@ def test_noise_rotate_negative_theta_mirrors_positive():
 	assert not torch.allclose(pos, neg, atol=1e-3), "but a different descendant"
 
 
-def test_noise_rotate_descendants_are_individually_seeded():
-	# Variant i comes from variation_seed + i, mirroring Seed Range Noise, so a
-	# descendant you liked can be reproduced on its own.
+def _angle(a, b):
+	a, b = a.flatten(), b.flatten()
+	return math.degrees(math.acos(max(-1.0, min(1.0, float(a @ b / (a.norm() * b.norm()))))))
+
+
+def test_spread_moves_siblings_without_moving_them_from_the_parent():
+	"""The whole point of `spread`: it separates two distances that were locked.
+
+	Every descendant must stay exactly theta from the parent whatever spread is,
+	while the angle BETWEEN them opens up. If distance-from-parent drifts with
+	spread, the two dials are still entangled and the control is a lie.
+	"""
 	lat, den = _parent()
-	batch = NoiseRotate().execute(lat, den, 30.0, 3, 900)[0]["samples"]
-	for i in range(3):
-		solo = NoiseRotate().execute(lat, den, 30.0, 1, 900 + i)[0]["samples"]
-		assert torch.allclose(batch[i:i+1], solo, atol=1e-6)
-	assert not torch.allclose(batch[0:1], batch[1:2])
+	eps = lat["samples"] - den["samples"]
+	for spread in (0.0, 20.0, 45.0, 90.0):
+		out = NoiseRotate().execute(lat, den, 45.0, 3, 900, spread=spread)[0]["samples"]
+		for i in range(out.shape[0]):
+			from_parent = _angle(out[i:i+1] - den["samples"], eps)
+			assert abs(from_parent - 45.0) < 0.2, \
+				f"spread={spread} moved a child to {from_parent:.2f} deg from the parent"
+
+
+def test_spread_controls_the_sibling_angle():
+	"""Sibling separation must grow monotonically with spread, matching the model.
+
+	    angle(i, j) = acos(cos^2 theta + sin^2 theta * cos^2 spread)
+	"""
+	lat, den = _parent(size=64)
+	seen = []
+	for spread in (0.0, 20.0, 45.0, 90.0):
+		out = NoiseRotate().execute(lat, den, 45.0, 2, 900, spread=spread)[0]["samples"]
+		got = _angle(out[0:1] - den["samples"], out[1:2] - den["samples"])
+		t, p = math.radians(45.0), math.radians(spread)
+		want = math.degrees(math.acos(max(-1.0, min(1.0,
+			math.cos(t) ** 2 + math.sin(t) ** 2 * math.cos(p) ** 2))))
+		assert abs(got - want) < 1.0, f"spread={spread}: got {got:.2f}, expected {want:.2f}"
+		seen.append(got)
+	assert seen == sorted(seen), f"sibling angle must grow with spread, got {seen}"
+
+
+def test_spread_zero_collapses_the_family():
+	"""spread=0 leaves only the shared direction, so every descendant is the same.
+
+	Worth pinning as a documented property rather than a surprise: it is the one
+	setting where `count` costs N renders of a single image.
+	"""
+	out = NoiseRotate().execute(*_parent(), 40.0, 4, 77, spread=0.0)[0]["samples"]
+	for i in range(1, out.shape[0]):
+		assert torch.allclose(out[0:1], out[i:i+1], atol=1e-5)
+
+
+def test_spread_default_is_the_old_independent_behaviour():
+	"""Default spread must reproduce acos(cos^2 theta) — the pre-spread node.
+
+	Anyone who never touches the new widget must get what they always got.
+	"""
+	lat, den = _parent(size=64)
+	out = NoiseRotate().execute(lat, den, 60.0, 2, 4242)[0]["samples"]
+	got = _angle(out[0:1] - den["samples"], out[1:2] - den["samples"])
+	want = math.degrees(math.acos(math.cos(math.radians(60.0)) ** 2))
+	assert abs(got - want) < 1.0, f"got {got:.2f}, expected {want:.2f}"
+
+
+def test_family_seed_never_collides_with_a_child_seed():
+	"""The shared direction is derived from the same integer as the children.
+
+	If that derivation landed on a child's own seed, that child's `q` would be
+	the family direction itself and orthogonalising would annihilate it. This is
+	the same collision class the variation seed already guards against.
+	"""
+	from tinode.nodes.sampling.noise_rotate import _family_seed
+	for base in (0, 1, 700, 642188584890465, 0xffffffffffff):
+		fam = _family_seed(base)
+		assert not (base <= fam <= base + 64), f"family seed {fam} collides for base {base}"
+
+
+def test_noise_rotate_descendants_are_addressed_by_seed_and_index():
+	"""A descendant is (variation_seed, index), and index is stable under `count`.
+
+	Before `spread` existed each child was a solo re-run at `variation_seed + i`.
+	A SHARED family direction makes that impossible by construction — it is
+	derived from the base seed, so a solo run at seed+1 would build a different
+	family. That promise is gone on purpose.
+
+	What replaces it is the invariant that actually gets used: child i is the
+	same latent whether you asked for 2 descendants or 64, so the pair
+	(seed, index) addresses it and Candidate Select's cursor stays meaningful.
+	Reproducing a descendant needs the parent latent and theta anyway — the seed
+	alone never sufficed at a branch stage.
+	"""
+	lat, den = _parent()
+	small = NoiseRotate().execute(lat, den, 30.0, 2, 900)[0]["samples"]
+	large = NoiseRotate().execute(lat, den, 30.0, 6, 900)[0]["samples"]
+	for i in range(small.shape[0]):
+		assert torch.allclose(small[i:i+1], large[i:i+1], atol=1e-6), \
+			f"descendant {i} moved when count changed"
+	assert not torch.allclose(large[0:1], large[1:2]), "descendants must differ"
 
 
 def test_noise_rotate_drops_the_parents_batch_index():

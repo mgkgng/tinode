@@ -37,7 +37,8 @@ degree — and it gets more exact at higher resolution, not less.
     90           fresh direction at the same noise level, x0_pred still kept
 
 theta steers TWO things at once, and they are not the same number. The angle
-from the parent is theta. The angle between two SIBLINGS is wider:
+from the parent is theta. The angle between two SIBLINGS is wider — at the
+default spread of 90:
 
     angle(variant_i, variant_j) = acos(cos^2 theta)
 
@@ -54,6 +55,26 @@ image, and that image is x0_pred minus the residual, the exact negative of the
 continuation. At 360 you are back at the original. Values beyond 90 are allowed
 because they are interesting to look at, not because they produce more variety.
 
+`spread` separates those two distances. Without it, how different the children
+are from EACH OTHER is locked to how far they are from the parent, and there is
+no way to ask for "move somewhere new, but keep this family tight". With it,
+every child still sits exactly theta from the parent while spread decides how
+widely they fan out around a shared family direction:
+
+    spread ->       0      10      20      30      45      60      75      90
+    theta  25      0.0     5.9    11.7    17.2    24.4    30.0    33.6    34.8
+    theta  45      0.0    10.0    19.7    29.0    41.4    51.3    57.8    60.0
+    theta  60      0.0    12.2    24.2    35.7    51.3    64.1    72.5    75.5
+                                    (sibling angle in degrees)
+
+spread = 90 is exactly what this node did before it existed, which is why it is
+the default. spread = 0 collapses the family to one image repeated `count`
+times. Above 90 is a mirror (100 behaves as 80), so the range stops there —
+unlike theta, where past 90 is genuinely different.
+
+Note the ceiling is set by theta: spread can only distribute the room theta has
+opened. At theta 25 the children can never be more than 34.8 degrees apart.
+
 Negative angles are a free extra axis: cos is even and sin is odd, so -theta has
 the identical strength as +theta but is a different descendant.
 
@@ -62,8 +83,13 @@ committed, so rotating re-rolls the composition rather than varying it. Deeper i
 (sigma ~1.8 or below) the layout holds while the interpretation changes, which is
 what "show me alternatives" actually means.
 
-Variant i uses `variation_seed + i`, mirroring Seed Range Noise, so any single
-descendant stays reproducible on its own.
+Variant i uses `variation_seed + i`, and the shared family direction is derived
+from the same integer — so one number still addresses the whole set. Note the
+pair (variation_seed, index) is what identifies a descendant, not a seed on its
+own: because the family direction is shared, a solo run at `variation_seed + i`
+builds a DIFFERENT family. Child i is stable under changing `count`, which is
+what makes the index a durable address. Reproducing a descendant needs the
+parent latent and theta regardless, so a standalone seed never sufficed here.
 """
 
 from __future__ import annotations
@@ -76,16 +102,68 @@ from ...base import TiNode, first
 from ...registry import register
 
 
-def rotate_residual(x, x0, theta_deg: float, generator):
-	"""One descendant: x0 plus the residual of `x` turned `theta_deg` degrees.
+# An odd 64-bit constant (splitmix64's) used to derive the family seed from the
+# same integer the children come from. One number still addresses the whole
+# family, and the derived value cannot land on a child's own seed.
+_FAMILY_MIX = 0x9E3779B97F4A7C15
+_U64 = 0xFFFFFFFFFFFFFFFF
 
-	Magnitude-preserving by construction, so the continuation still receives the
-	noise level its schedule expects.
+
+def _family_seed(base: int) -> int:
+	"""A seed for the shared direction, derived from — but never equal to — a child's."""
+	fam = ((base + 1) * _FAMILY_MIX) & _U64
+	if base <= fam <= base + 4096:
+		# Cannot happen in practice, but a seed collision is exactly the bug this
+		# node exists to avoid, so refuse to rely on luck.
+		fam ^= 0xA5A5A5A5A5A5A5A5
+	return fam
+
+
+def _project_out(x, a):
+	"""`x` with its component along `a` removed: one step of Gram-Schmidt.
+
+	Two independent gaussians in D dimensions are ALMOST perpendicular already
+	(cos ~ 1/sqrt(D), 0.7% at 4x113x64), which is why a single rotation was
+	honest to about 0.2 degrees without this. `spread` composes two rotations
+	and is used at small angles, where that same 0.2 degrees is a tenth of the
+	value on the dial — so here it is made exact instead of nearly-exact.
+	"""
+	xf, af = x.flatten().double(), a.flatten().double()
+	return x - float(xf @ af / (af @ af)) * a
+
+
+def rotate_family(x, x0, theta_deg: float, spread_deg: float, count: int, base_seed: int):
+	"""`count` descendants, each exactly `theta_deg` from the parent.
+
+	    v      one shared family direction, perpendicular to the residual
+	    q_i    each child's own direction, perpendicular to both
+	    w_i =  cos(spread)*v + sin(spread)*q_i
+	    d_i =  cos(theta)*eps + sin(theta)*w_i
+
+	Because every w_i is perpendicular to eps and unit-scaled to it, ||d_i|| ==
+	||eps|| exactly and d_i . eps == cos(theta) for every child — so `spread`
+	moves the children around each other WITHOUT moving them nearer or further
+	from the parent. That separation is the whole point: theta says how far the
+	family travels, spread says how far apart its members are.
 	"""
 	eps = x - x0
-	new = torch.randn(eps.shape, generator=generator, dtype=eps.dtype) * eps.std()
-	t = math.radians(theta_deg)
-	return x0 + (math.cos(t) * eps + math.sin(t) * new)
+	scale = eps.std()
+	t, p = math.radians(theta_deg), math.radians(spread_deg)
+
+	def draw(seed):
+		return torch.randn(eps.shape, dtype=eps.dtype,
+						   generator=torch.Generator().manual_seed(int(seed) & _U64))
+
+	v = _project_out(draw(_family_seed(base_seed)), eps)
+	v = v / v.std() * scale
+
+	out = []
+	for i in range(count):
+		q = _project_out(_project_out(draw(base_seed + i), eps), v)
+		q = q / q.std() * scale
+		w = math.cos(p) * v + math.sin(p) * q
+		out.append(x0 + (math.cos(t) * eps + math.sin(t) * w))
+	return out
 
 
 @register
@@ -121,7 +199,19 @@ class NoiseRotate(TiNode):
 					"with Candidate Select."}),
 				"variation_seed": ("INT", {"default": 0, "min": 0,
 					"max": 0xffffffffffffffff - 0xffff, "control_after_generate": True,
-					"tooltip": "Descendant i is drawn from variation_seed + i."}),
+					"tooltip": "Descendant i is drawn from variation_seed + i. The "
+							   "shared family direction is derived from the same "
+							   "number, so one integer still addresses the whole set."}),
+				# Declared LAST on purpose: widgets_values is positional, so adding
+				# a widget in the middle would silently re-map every saved graph.
+				"spread": ("FLOAT", {"default": 90.0, "min": 0.0, "max": 90.0,
+					"step": 0.5, "tooltip":
+					"How far apart the descendants are FROM EACH OTHER, at the "
+					"same distance from the parent. 90 = independent (the "
+					"default, and what this node always did); 0 = every "
+					"descendant identical, so `count` costs you N renders of one "
+					"image. The sibling angle it produces is capped by theta: at "
+					"theta 25 they can never be more than 34.8 degrees apart."}),
 			},
 		}
 
@@ -132,7 +222,7 @@ class NoiseRotate(TiNode):
 	)
 	FUNCTION = "execute"
 
-	def execute(self, latent, denoised, theta, count, variation_seed):
+	def execute(self, latent, denoised, theta, count, variation_seed, spread=90.0):
 		x, x0 = latent["samples"], denoised["samples"]
 		if x.shape != x0.shape:
 			raise RuntimeError(
@@ -155,18 +245,19 @@ class NoiseRotate(TiNode):
 			)
 
 		theta = float(first(theta, 0.0))
+		spread = float(first(spread, 90.0))
 		base = int(first(variation_seed, 0))
-		variants = [
-			rotate_residual(x, x0, theta,
-							torch.Generator().manual_seed(base + i))
-			for i in range(int(first(count, 1)))
-		]
+		n = int(first(count, 1))
+		if n > 1 and spread < 1.0:
+			print(f"[tinode] Noise Rotate: spread={spread:g} — {n} descendants will be "
+				  f"near-identical; you are paying {n} renders for one image.")
+		variants = rotate_family(x, x0, theta, spread, n, base)
 
 		out = latent.copy()
 		out["samples"] = torch.cat(variants, dim=0)
 		# The descendants are their own lineage now; the parent's batch position
 		# would mislead anything that regenerates noise from them.
 		out.pop("batch_index", None)
-		print(f"[tinode] Noise Rotate: {len(variants)} descendant(s) "
-			  f"at theta={theta:g}deg from seed {base}")
+		print(f"[tinode] Noise Rotate: {len(variants)} descendant(s) at "
+			  f"theta={theta:g}deg spread={spread:g}deg from seed {base}")
 		return (out,)
