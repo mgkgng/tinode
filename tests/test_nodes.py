@@ -66,6 +66,9 @@ from tinode.nodes.sampling.seed_range_noise import Noise_SeedRange, seeds_for  #
 from tinode.nodes.sampling.sigma_segment import SigmaSegment, slice_sigmas  # noqa: E402
 from tinode.nodes.sampling.candidate_select import CandidateSelect  # noqa: E402
 from tinode.nodes.sampling.noise_rotate import NoiseRotate, rotate_residual  # noqa: E402
+from tinode.nodes.sampling.step_stamp import (  # noqa: E402
+	StampStep, ResumeStep, stamped_step,
+)
 from tinode.schema import validate_crop_xform, validate_segments  # noqa: E402
 
 
@@ -3609,6 +3612,73 @@ def test_candidate_select_refuses_an_empty_batch():
 	except RuntimeError as exc:
 		assert "empty" in str(exc)
 
+
+
+# ------------------------------------------------------------------- step stamp
+def test_stamp_step_round_trips():
+	"""The whole contract: what Stamp writes, Resume reads back."""
+	lat = {"samples": torch.zeros(1, 4, 8, 8)}
+	stamped = StampStep().execute(lat, 11)[0]
+	assert ResumeStep().execute(stamped)[0] == 11
+
+
+def test_stamp_survives_the_nodes_it_has_to_travel_through():
+	"""The stamp is only useful if every hop preserves it.
+
+	SamplerCustomAdvanced, Candidate Select and Noise Rotate all rebuild the
+	latent with `latent.copy()`, so extra keys ride along. Pin that for the two
+	nodes in this pack — if either ever stops copying, the stamp goes silently
+	missing and stages resume at the wrong sigma.
+	"""
+	g = torch.Generator().manual_seed(3)
+	batch = {"samples": torch.randn(4, 4, 8, 8, generator=g), "ti_step": 9}
+	denoised = {"samples": torch.randn(4, 4, 8, 8, generator=g), "ti_step": 9}
+
+	picked, picked_dn = CandidateSelect().execute(batch, index=2, denoised=denoised)["result"][:2]
+	assert stamped_step(picked) == 9, "Candidate Select dropped the stamp"
+	assert stamped_step(picked_dn) == 9, "Candidate Select dropped it on `denoised`"
+
+	kids = NoiseRotate().execute(picked, picked_dn, 25.0, 3, 500)[0]
+	assert stamped_step(kids) == 9, "Noise Rotate dropped the stamp"
+
+
+def test_resume_step_falls_back_for_an_unstamped_latent():
+	"""An Empty Latent has never been sampled, so step 0 is the truth."""
+	assert ResumeStep().execute({"samples": torch.zeros(1, 4, 8, 8)})[0] == 0
+	assert ResumeStep().execute({"samples": torch.zeros(1, 4, 8, 8)}, fallback=7)[0] == 7
+
+
+def test_stamp_step_refuses_to_go_backwards():
+	"""Checkpoints out of order is the mistake this catches.
+
+	Sampling only moves forward, so a stage ending before the latent already is
+	means the controls are misordered — worth an error while the numbers are
+	still on screen, rather than a plausible image from the wrong sigma.
+	"""
+	at14 = {"samples": torch.zeros(1, 4, 8, 8), "ti_step": 14}
+	try:
+		StampStep().execute(at14, 9)
+		assert False, "stamping backwards should raise"
+	except ValueError as exc:
+		assert "already at step 14" in str(exc)
+	# equal is fine: re-stamping the same position is a no-op, not a mistake
+	assert ResumeStep().execute(StampStep().execute(at14, 14)[0])[0] == 14
+
+
+def test_stamp_step_does_not_mutate_its_input():
+	"""The incoming latent may still be feeding other nodes."""
+	lat = {"samples": torch.zeros(1, 4, 8, 8)}
+	StampStep().execute(lat, 4)
+	assert "ti_step" not in lat
+
+
+def test_stamp_step_keeps_the_other_latent_keys():
+	"""batch_index in particular — losing it would move a candidate's seed."""
+	lat = {"samples": torch.zeros(1, 4, 8, 8), "batch_index": [3],
+		   "noise_mask": torch.ones(1, 1, 8, 8)}
+	out = StampStep().execute(lat, 4)[0]
+	assert out["batch_index"] == [3]
+	assert "noise_mask" in out
 
 
 # ----------------------------------------------------------------- noise rotate
