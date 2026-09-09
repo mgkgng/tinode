@@ -70,9 +70,25 @@ function mode(node) {
 	return node.properties?.ti_view === "single" ? "single" : "grid";
 }
 
+/** Fetch every full-size image once, so Prev/Next is a cache hit rather than a
+ *  round trip. Only on entering the single view — doing it on every execute
+ *  would pull the full batch for people who never leave the grid. The array is
+ *  retained so the Image objects are not collected before they land. */
+function warmFullImages(node) {
+	const t = node._tcs;
+	if (!t || !t.state.thumbs.length) return;
+	t.warm = t.state.thumbs.map((th) => {
+		const im = new Image();
+		im.decoding = "async";
+		im.src = urlFor(t, th, true);
+		return im;
+	});
+}
+
 function setMode(node, m) {
 	node.properties = node.properties || {};
 	node.properties.ti_view = m;
+	if (m === "single") warmFullImages(node);
 	paint(node);
 	node.setDirtyCanvas?.(true, true);
 }
@@ -141,10 +157,8 @@ function paintGrid(node) {
 	const thumbs = t.state.thumbs;
 
 	t.grid.replaceChildren();
-	t.rows = 0;
 	if (!thumbs.length) return;
 	const cols = colsFor(node, thumbs.length);
-	t.rows = Math.ceil(thumbs.length / cols);
 	// Fixed-width columns: the row fills up, then wraps to the next line.
 	t.grid.style.gridTemplateColumns = `repeat(${cols}, ${TILE}px)`;
 	thumbs.forEach((th, i) => {
@@ -188,12 +202,26 @@ function paintSingle(node) {
 	t.view.style.height = viewHeight(node) + "px";
 	// object-fit:contain, not cover: the grid may crop a tile to keep the row
 	// tidy, but the view exists to show the picture and must not hide any of it.
-	t.img.style.display = th ? "block" : "none";
+	t.img.style.display = t.thumbImg.style.display = th ? "block" : "none";
 	if (th) {
+		// The THUMBNAIL is already in the browser cache — the grid fetched it —
+		// so it paints in the same frame as the click. Show it upscaled
+		// underneath and let the full image fade in on top when it arrives.
+		// Navigation then feels immediate even when the full fetch is not,
+		// which over a remote proxy is most of the time.
+		const small = urlFor(t, th, false);
+		if (t.thumbImg.getAttribute("src") !== small) t.thumbImg.setAttribute("src", small);
+
 		const want = urlFor(t, th, true);
 		// Only reassign on a real change — writing the same src restarts the
 		// fetch and makes the image blink on every ◀ ▶ repaint.
-		if (t.img.getAttribute("src") !== want) t.img.setAttribute("src", want);
+		if (t.img.getAttribute("src") !== want) {
+			t.img.style.opacity = "0";
+			t.img.onload = () => { t.img.style.opacity = "1"; };
+			t.img.setAttribute("src", want);
+		} else if (t.img.complete) {
+			t.img.style.opacity = "1";
+		}
 	}
 	const count = t.state.count || 0;
 	t.prev.disabled = i <= 0;
@@ -224,10 +252,18 @@ function paint(node) {
 	t.view.style.display = single ? "flex" : "none";
 	t.row.style.display = single ? "flex" : "none";
 
-	// The grid is painted even while hidden: its row count decides the node's
-	// height the moment Back is pressed, and computing it here keeps the
-	// transition instant instead of a one-frame collapse.
-	paintGrid(node);
+	// Row count decides the node height, and Back must not cause a one-frame
+	// collapse — but that number is arithmetic, so compute it without touching
+	// the DOM and rebuild the grid ONLY when it is visible and actually stale.
+	// Rebuilding it on every Prev/Next re-created six <img> elements behind a
+	// display:none, which is most of what made navigation feel slow.
+	const n = t.state.thumbs.length;
+	t.rows = n ? Math.ceil(n / colsFor(node, n)) : 0;
+	const key = `${t.state.stamp}|${colsFor(node, n)}|${cur(node)}`;
+	if (!single && key !== t.gridKey) {
+		t.gridKey = key;
+		paintGrid(node);
+	}
 	if (single) paintSingle(node);
 
 	// Switching view, or a different candidate count, needs a different height.
@@ -274,12 +310,18 @@ function setup(node) {
 		+ "align-content:start;overflow-y:auto;overflow-x:hidden;";
 
 	const view = document.createElement("div");
-	view.style.cssText = "display:none;align-items:center;justify-content:center;"
-		+ "background:#11141a;border:1px solid #2a2f3a;border-radius:4px;"
-		+ "box-sizing:border-box;overflow:hidden;flex:0 0 auto;";
+	view.style.cssText = "display:none;position:relative;align-items:center;"
+		+ "justify-content:center;background:#11141a;border:1px solid #2a2f3a;"
+		+ "border-radius:4px;box-sizing:border-box;overflow:hidden;flex:0 0 auto;";
+	const layer = "position:absolute;inset:0;width:100%;height:100%;display:block;"
+		+ "object-fit:contain;";
+	// Underneath: the cached thumbnail, upscaled. Soft, but instant.
+	const thumbImg = document.createElement("img");
+	thumbImg.style.cssText = layer + "filter:blur(1px);";
+	// On top: the real thing, revealed once decoded.
 	const img = document.createElement("img");
-	img.style.cssText = "max-width:100%;max-height:100%;display:block;object-fit:contain;";
-	view.append(img);
+	img.style.cssText = layer + "opacity:0;transition:opacity .12s linear;";
+	view.append(thumbImg, img);
 
 	const row = document.createElement("div");
 	row.style.cssText = `display:none;gap:5px;height:${BTN_H}px;flex:0 0 auto;`;
@@ -299,8 +341,8 @@ function setup(node) {
 	row.append(back, prev, next);
 
 	wrap.append(head, grid, view, row);
-	node._tcs = { wrap, head, grid, view, img, row, back, prev, next,
-				  rows: 0, lastWant: -1, lastMode: null, gridH: 0,
+	node._tcs = { wrap, head, grid, view, img, thumbImg, row, back, prev, next,
+				  rows: 0, lastWant: -1, lastMode: null, gridH: 0, gridKey: "", warm: [],
 				  state: { count: 0, origin: null, thumbs: [], stamp: 0 } };
 	node.addDOMWidget("candidate_ui", "ti_candidate_ui", wrap, {
 		serialize: false, hideOnZoom: false,
@@ -343,6 +385,7 @@ app.registerExtension({
 					// Filenames are reused across runs; bust the browser cache.
 					stamp: Date.now(),
 				};
+				if (mode(this) === "single") warmFullImages(this);
 				// The view mode is left alone on purpose. This node re-runs on
 				// EVERY queue (OUTPUT_NODE), including queues that were about
 				// the downstream stages, so snapping back to the grid each time

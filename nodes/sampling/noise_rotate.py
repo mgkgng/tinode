@@ -241,8 +241,7 @@ class NoiseRotate(TiNode):
 					"theta 25 they can never be more than 34.8 degrees apart."}),
 				# Also last, and for the same positional reason as `spread`.
 				"keep_parent": ("BOOLEAN", {"default": False,
-					"label_on": "descendant 1 is the parent",
-					"label_off": "all descendants vary", "tooltip":
+					"label_on": "Yes", "label_off": "No", "tooltip":
 					"Make the FIRST descendant the parent's own continuation, "
 					"unchanged, and vary the rest. Use it when the current state "
 					"is already good: you keep it in the same batch as its "
