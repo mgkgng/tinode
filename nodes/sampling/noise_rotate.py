@@ -78,6 +78,23 @@ opened. At theta 25 the children can never be more than 34.8 degrees apart.
 Negative angles are a free extra axis: cos is even and sin is odd, so -theta has
 the identical strength as +theta but is a different descendant.
 
+The node prints what each branch had to work with. Two very different failures
+look identical on the canvas -- descendants that come out the same -- and only
+the numbers separate them: either the residual barely matters any more (the
+model has committed, nothing left to turn) or the latents WERE separated and
+the model collapsed them on the way to an image. Distilled/turbo models do the
+second: they are trained to jump to their answer and to ignore the noise they
+are handed, which is exactly the property this node needs.
+
+SD1.5 reference, "normal" scheduler, 12 total steps, measured on this pack:
+
+    branch at step:      2      4      6      9     11
+    residual share:  97.7%  89.3%  71.5%  21.6%   0.1%
+
+`residual share` is a ratio of variances, so it is scale-free and comparable
+across models whose latent scalings and sigma ranges share no units -- a
+rectified-flow schedule runs sigma 1 -> 0 where SD1.5 runs 14.6 -> 0.
+
 Measured on SD1.5: branch LATE. At sigma 4.86 (96% noise) x0_pred is barely
 committed, so rotating re-rolls the composition rather than varying it. Deeper in
 (sigma ~1.8 or below) the layout holds while the interpretation changes, which is
@@ -193,6 +210,60 @@ def rotate_family(x, x0, theta_deg: float, spread_deg: float, count: int, base_s
 	return out
 
 
+def _diagnose(x, x0, variants, theta_deg, spread_deg, skip_first):
+	"""Print what the branch had to work with, and what it actually produced.
+
+	Two different failures look identical from the canvas — descendants that
+	come out the same. Either the node was given nothing to vary (the model has
+	already committed, so the residual barely matters), or it varied the latents
+	properly and the MODEL collapsed them back on the way to an image. The
+	numbers below separate those, which no amount of staring at the previews
+	will.
+
+	`residual share` is scale-free (a ratio of variances), so it is comparable
+	across checkpoints AND across models with different latent scalings — which
+	matters, because a rectified-flow model's sigma runs 1 -> 0 while SD1.5's
+	runs 14.6 -> 0 and the raw numbers share no units.
+	"""
+	eps = x - x0
+	s_x0, s_eps = float(x0.std()), float(eps.std())
+	share = 100.0 * s_eps ** 2 / (s_eps ** 2 + s_x0 ** 2) if (s_eps or s_x0) else 0.0
+	print(f"[tinode]   parent: std(x0)={s_x0:.4f} std(residual)={s_eps:.4f} "
+		  f"-> residual is {share:.1f}% of the state")
+
+	# What the dials asked for: two children each theta from the parent, fanned
+	# out by spread, sit acos(cos^2 t + sin^2 t cos^2 s) apart.
+	t, p = math.radians(theta_deg), math.radians(spread_deg)
+	want = math.degrees(math.acos(max(-1.0, min(1.0,
+		math.cos(t) ** 2 + math.sin(t) ** 2 * math.cos(p) ** 2))))
+
+	# Cap the sample: this is O(n^2) dot products over a full latent.
+	pool = [v for v in variants[1:]] if skip_first else list(variants)
+	pool = pool[:6]
+	got = None
+	if len(pool) > 1:
+		ds = [(v - x0).flatten().double() for v in pool]
+		cos = []
+		for i in range(len(ds)):
+			for j in range(i + 1, len(ds)):
+				n = ds[i].norm() * ds[j].norm()
+				if float(n) > 0:
+					cos.append(max(-1.0, min(1.0, float(ds[i] @ ds[j] / n))))
+		if cos:
+			got = math.degrees(math.acos(sum(cos) / len(cos)))
+
+	if got is None:
+		print(f"[tinode]   siblings: n/a (need 2+ varying descendants), asked for {want:.1f}deg")
+	else:
+		print(f"[tinode]   siblings: {got:.1f}deg apart in latent space (asked for {want:.1f}deg)")
+		if abs(got - want) < 2.0 and got > 10.0:
+			print("[tinode]   -> the latents ARE separated. If the images still look "
+				  "alike, the MODEL is collapsing them, not this node.")
+	if share < 20.0:
+		print(f"[tinode]   -> only {share:.1f}% of the state is still residual; there is "
+			  f"little left to turn. Branch earlier.")
+
+
 @register
 class NoiseRotate(TiNode):
 	DISPLAY_NAME = "Noise Rotate (ti)"
@@ -306,4 +377,9 @@ class NoiseRotate(TiNode):
 		kept = " (descendant 1 is the parent)" if keep else ""
 		print(f"[tinode] Noise Rotate: {len(variants)} descendant(s) at "
 			  f"theta={theta:g}deg spread={spread:g}deg from seed {base}{kept}")
+		try:
+			_diagnose(x, x0, variants, theta, spread, keep)
+		except Exception as exc:  # noqa: BLE001
+			# Diagnostics must never cost you the branch.
+			print(f"[tinode]   (diagnostics unavailable: {exc!r})")
 		return (out,)
