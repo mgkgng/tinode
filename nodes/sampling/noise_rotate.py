@@ -579,6 +579,17 @@ class NoiseRotate(TiNode):
 		elif model is not None:
 			variants, coord, rotated = rotate_in_noise_space(
 				x, x0, model, sigma, theta, spread, n, base, keep)
+			# Say WHICH sigma was used, not just that a sigma was used. Wiring
+			# the wrong segment's start_sigma is silent and catastrophic: at
+			# sigma 1.0 the signal term (1-sigma)*x0 vanishes and the rebuilt
+			# state contains no image at all, only noise.
+			print(f"[tinode]   model-aware path: sigma={float(sigma):.4f} "
+				  f"(signal weight {1.0 - float(sigma):.3f}) — this MUST be the sigma "
+				  f"the latent is at, i.e. the START of the segment about to run.")
+			if float(sigma) >= 0.999:
+				print("[tinode]   !! sigma is ~1.0: the reconstruction keeps NO signal. "
+					  "You have almost certainly wired the previous segment's "
+					  "start_sigma instead of this one's.")
 		else:
 			print("[tinode]   using the ADDITIVE path (x = x0 + sigma*eps): correct for "
 				  "SD/SDXL, WRONG for rectified flow. Wire `model` + `current_sigma` "
