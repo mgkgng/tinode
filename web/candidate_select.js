@@ -1,9 +1,22 @@
-// Click-to-pick grid for "Candidate Select (ti)".
+// Click-to-pick grid + single-candidate viewer for "Candidate Select (ti)".
 //
 // Choosing a candidate is a visual judgement, so the node shows the candidates
-// rather than a number: a thumbnail grid, click one, it gets a bright border and
-// the `index` widget follows. Selecting is still an ordinary graph edit, so you
-// re-queue when you are ready — the click does not run anything by itself.
+// rather than a number. It has two views:
+//
+//   GRID    every candidate at once — the comparison the choice actually is.
+//           Click one and it is selected AND opened in the single view.
+//   SINGLE  that candidate large, the way Preview Image shows an image, with
+//           ◀ ▶ to walk the batch without shrinking back down, and Back to
+//           return to the grid.
+//
+// A thumbnail is enough to tell two compositions apart and never enough to
+// judge one, which is why clicking has to do more than move a number.
+//
+// The ◀ ▶ buttons move the SELECTION, not a separate viewing cursor. Two
+// cursors would let the picture on screen disagree with the `index` that the
+// graph will actually run — the same class of mistake as a latent whose sigma
+// stayed behind. Selecting is still an ordinary graph edit either way, so
+// nothing runs until you re-queue.
 //
 // The grid is whatever the last run produced. When the cursor sits on a
 // candidate the run did not cover (index typed by hand, or a re-queue pending),
@@ -22,6 +35,11 @@ const NODE_TYPE = "TI_CandidateSelect";
 const TILE = 56;
 const GAP = 4;
 const HEAD_H = 24;
+const BTN_H = 26;
+// Ceiling on the single view's image box. Without one, a tall candidate on a
+// wide node would grow the node taller than the screen the moment it is opened.
+const VIEW_MAX_H = 420;
+const VIEW_MIN_H = 120;
 // Litegraph gives the DOM widget a content-sized box, so `width:100%` inside it
 // resolves against nothing and fixed-width grid tracks push the widget WIDER
 // than the node instead of wrapping. Size it from node.size[0] instead, which is
@@ -43,33 +61,84 @@ function colsFor(node, n) {
 	return Math.max(1, Math.min(n, fit));
 }
 
-function setIndex(node, v) {
-	const w = getWidget(node, "index");
-	if (!w) return;
-	w.value = Math.max(0, Math.round(v));
-	w.callback?.(w.value, app.canvas, node);
+function cur(node) { return Math.round(getWidget(node, "index")?.value ?? 0); }
+
+/** The view mode lives in node.properties so it is SERIALISED with the graph:
+ *  reopening a workflow puts the node back in the view you left it in. The DOM
+ *  widget itself is serialize:false, so it cannot remember anything. */
+function mode(node) {
+	return node.properties?.ti_view === "single" ? "single" : "grid";
+}
+
+function setMode(node, m) {
+	node.properties = node.properties || {};
+	node.properties.ti_view = m;
 	paint(node);
 	node.setDirtyCanvas?.(true, true);
 }
 
-function paint(node) {
+/** Move the selection, clamped to the batch. Clamping rather than wrapping
+ *  matches the node's own out-of-range behaviour: a cursor that stops at the
+ *  end is honest, one that silently jumps to the other end is not. */
+function setIndex(node, v) {
+	const w = getWidget(node, "index");
+	if (!w) return;
+	const count = node._tcs?.state.count || 0;
+	const hi = count ? count - 1 : 99999;
+	w.value = Math.max(0, Math.min(Math.round(v), hi));
+	// The callback is wrapped in setup() to repaint, so this must not paint
+	// again: a second pass would reassign the image src and make it blink.
+	w.callback?.(w.value, app.canvas, node);
+	node.setDirtyCanvas?.(true, true);
+}
+
+function urlFor(t, th, full) {
+	const name = (full && th.full) || th.filename;
+	return api.apiURL(`/view?filename=${encodeURIComponent(name)}`
+		+ `&type=${th.type}&subfolder=${encodeURIComponent(th.subfolder || "")}`
+		+ `&t=${t.state.stamp}`);
+}
+
+function headline(node) {
 	const t = node._tcs;
-	if (!t) return;
-	const idx = Math.round(getWidget(node, "index")?.value ?? 0);
-	const { count, origin, thumbs } = t.state;
+	const idx = cur(node);
+	const { count, origin } = t.state;
+	if (!count) return "queue once to see the candidates";
+	const shown = Math.min(idx, count - 1);
+	return `${shown + 1} / ${count}`
+		+ (origin !== null ? `   ·   seed ${origin + shown}` : "")
+		+ (idx >= count ? "   ·   out of range" : "");
+}
 
-	t.head.textContent = !count
-		? "queue once to see the candidates"
-		: `${Math.min(idx, count - 1) + 1} / ${count}`
-			+ (origin !== null ? `   ·   seed ${origin + Math.min(idx, count - 1)}` : "")
-			+ (idx >= count ? "   ·   out of range" : "");
+/** The height this widget needs for the view it is currently in. Drives
+ *  getMinHeight, so litegraph reserves the right box instead of clipping the
+ *  last grid row or leaving a gap under a small image. */
+function neededHeight(node) {
+	const t = node._tcs;
+	if (!t) return HEAD_H + TILE + 10;
+	if (mode(node) === "single") {
+		return HEAD_H + 6 + viewHeight(node) + 4 + BTN_H + 4;
+	}
+	return HEAD_H + 6 + Math.max(1, t.rows || 1) * (TILE + 4);
+}
 
-	// Pin the box to the node's width so nothing inside can widen it.
-	const inner = innerWidth(node) + "px";
-	t.wrap.style.width = inner;
-	t.wrap.style.maxWidth = inner;
-	t.grid.style.width = inner;
-	t.grid.style.maxWidth = inner;
+/** How tall the single view's image box should be: the candidate's own aspect
+ *  ratio at the node's current width, capped. Sizing to the REAL ratio is why
+ *  the backend sends width/height — a portrait candidate letterboxed into a
+ *  square box would waste half the room you opened the view to get. */
+function viewHeight(node) {
+	const t = node._tcs;
+	const th = t.state.thumbs[Math.min(cur(node), t.state.thumbs.length - 1)];
+	const w = innerWidth(node);
+	if (!th || !th.width || !th.height) return Math.min(VIEW_MAX_H, Math.max(VIEW_MIN_H, w));
+	const h = Math.round(w * (th.height / th.width));
+	return Math.min(VIEW_MAX_H, Math.max(VIEW_MIN_H, h));
+}
+
+function paintGrid(node) {
+	const t = node._tcs;
+	const idx = cur(node);
+	const thumbs = t.state.thumbs;
 
 	t.grid.replaceChildren();
 	t.rows = 0;
@@ -86,9 +155,7 @@ function paint(node) {
 			+ `border:2px solid ${on ? "#7fd1ff" : "#2a2f3a"};`
 			+ (on ? "box-shadow:0 0 0 2px rgba(127,209,255,.35);" : "opacity:.72;");
 		const img = document.createElement("img");
-		img.src = api.apiURL(`/view?filename=${encodeURIComponent(th.filename)}`
-			+ `&type=${th.type}&subfolder=${encodeURIComponent(th.subfolder || "")}`
-			+ `&t=${t.state.stamp}`);
+		img.src = urlFor(t, th, false);
 		img.style.cssText = "width:100%;height:100%;display:block;object-fit:cover;";
 		const tag = document.createElement("div");
 		tag.textContent = i + 1;
@@ -97,17 +164,92 @@ function paint(node) {
 		cell.append(img, tag);
 		cell.onmouseenter = () => { if (i !== idx) cell.style.opacity = "1"; };
 		cell.onmouseleave = () => { if (i !== idx) cell.style.opacity = ".72"; };
-		cell.onclick = (e) => { e.stopPropagation(); setIndex(node, i); };
+		// One click both picks the candidate and opens it: the two are the same
+		// intention. setMode paints, so the index is set without painting twice.
+		cell.onclick = (e) => {
+			e.stopPropagation();
+			const w = getWidget(node, "index");
+			// Set the value WITHOUT its repaint (setMode paints), because this
+			// handler is running inside the very grid a repaint would replace.
+			if (w) { w.value = i; }
+			setMode(node, "single");
+			w?.callback?.(i, app.canvas, node);
+		};
 		t.grid.append(cell);
 	});
+}
 
-	// A different candidate count needs a different number of rows, so let
-	// litegraph re-measure (it consults getMinHeight) and grow the node if the
-	// grid no longer fits. Only ever grows: shrinking would fight a manual resize.
-	if (t.rows !== t.lastRows) {
-		t.lastRows = t.rows;
-		const want = node.computeSize?.();
-		if (want && node.size[1] < want[1]) node.setSize([node.size[0], want[1]]);
+function paintSingle(node) {
+	const t = node._tcs;
+	const thumbs = t.state.thumbs;
+	const i = Math.min(cur(node), thumbs.length - 1);
+	const th = thumbs[i];
+
+	t.view.style.height = viewHeight(node) + "px";
+	// object-fit:contain, not cover: the grid may crop a tile to keep the row
+	// tidy, but the view exists to show the picture and must not hide any of it.
+	t.img.style.display = th ? "block" : "none";
+	if (th) {
+		const want = urlFor(t, th, true);
+		// Only reassign on a real change — writing the same src restarts the
+		// fetch and makes the image blink on every ◀ ▶ repaint.
+		if (t.img.getAttribute("src") !== want) t.img.setAttribute("src", want);
+	}
+	const count = t.state.count || 0;
+	t.prev.disabled = i <= 0;
+	t.next.disabled = count === 0 || i >= count - 1;
+	for (const b of [t.prev, t.next]) {
+		b.style.opacity = b.disabled ? ".4" : "1";
+		b.style.cursor = b.disabled ? "default" : "pointer";
+	}
+}
+
+function paint(node) {
+	const t = node._tcs;
+	if (!t) return;
+	const single = mode(node) === "single" && t.state.thumbs.length > 0;
+
+	t.head.textContent = headline(node);
+
+	// Pin the box to the node's width so nothing inside can widen it.
+	const inner = innerWidth(node) + "px";
+	t.wrap.style.width = inner;
+	t.wrap.style.maxWidth = inner;
+	t.grid.style.width = inner;
+	t.grid.style.maxWidth = inner;
+	t.view.style.width = inner;
+	t.view.style.maxWidth = inner;
+
+	t.grid.style.display = single ? "none" : "grid";
+	t.view.style.display = single ? "flex" : "none";
+	t.row.style.display = single ? "flex" : "none";
+
+	// The grid is painted even while hidden: its row count decides the node's
+	// height the moment Back is pressed, and computing it here keeps the
+	// transition instant instead of a one-frame collapse.
+	paintGrid(node);
+	if (single) paintSingle(node);
+
+	// Switching view, or a different candidate count, needs a different height.
+	// Let litegraph re-measure (it consults getMinHeight) and grow the node if
+	// the content no longer fits. Growing is the normal case; shrinking would
+	// fight a manual resize, so it happens only when LEAVING the single view,
+	// where the tall box we reserved is demonstrably no longer needed and
+	// keeping it would strand a large empty rectangle under a two-row grid.
+	//
+	// A manual height set in grid mode is remembered across the trip rather than
+	// lost to that shrink: you get your node back, not the minimum one.
+	const want = neededHeight(node);
+	if (want !== t.lastWant || (single ? "single" : "grid") !== t.lastMode) {
+		const leaving = t.lastMode === "single" && !single;
+		if (t.lastMode === "grid" && single) t.gridH = node.size[1];
+		t.lastWant = want;
+		t.lastMode = single ? "single" : "grid";
+		const size = node.computeSize?.();
+		if (size) {
+			if (leaving) node.setSize([node.size[0], Math.max(size[1], t.gridH || 0)]);
+			else if (node.size[1] < size[1]) node.setSize([node.size[0], size[1]]);
+		}
 		node.setDirtyCanvas?.(true, true);
 	}
 }
@@ -131,14 +273,40 @@ function setup(node) {
 	grid.style.cssText = "display:grid;gap:4px;justify-content:start;"
 		+ "align-content:start;overflow-y:auto;overflow-x:hidden;";
 
-	wrap.append(head, grid);
-	node._tcs = { wrap, head, grid, rows: 0, lastRows: -1,
+	const view = document.createElement("div");
+	view.style.cssText = "display:none;align-items:center;justify-content:center;"
+		+ "background:#11141a;border:1px solid #2a2f3a;border-radius:4px;"
+		+ "box-sizing:border-box;overflow:hidden;flex:0 0 auto;";
+	const img = document.createElement("img");
+	img.style.cssText = "max-width:100%;max-height:100%;display:block;object-fit:contain;";
+	view.append(img);
+
+	const row = document.createElement("div");
+	row.style.cssText = `display:none;gap:5px;height:${BTN_H}px;flex:0 0 auto;`;
+	const mk = (text, title, onClick, grow) => {
+		const b = document.createElement("button");
+		b.textContent = text;
+		b.title = title;
+		b.style.cssText = `flex:${grow || 1};padding:0;border:1px solid #3a4150;`
+			+ "border-radius:4px;background:#2a2f3a;color:#cfe3ff;cursor:pointer;"
+			+ "font:600 12px sans-serif;";
+		b.onclick = (e) => { e.stopPropagation(); if (!b.disabled) onClick(); };
+		return b;
+	};
+	const back = mk("⊞ Back", "Back to the candidate grid", () => setMode(node, "grid"), 1.1);
+	const prev = mk("◀ Prev", "Select the previous candidate", () => setIndex(node, cur(node) - 1));
+	const next = mk("Next ▶", "Select the next candidate", () => setIndex(node, cur(node) + 1));
+	row.append(back, prev, next);
+
+	wrap.append(head, grid, view, row);
+	node._tcs = { wrap, head, grid, view, img, row, back, prev, next,
+				  rows: 0, lastWant: -1, lastMode: null, gridH: 0,
 				  state: { count: 0, origin: null, thumbs: [], stamp: 0 } };
 	node.addDOMWidget("candidate_ui", "ti_candidate_ui", wrap, {
 		serialize: false, hideOnZoom: false,
-		// Ask for exactly the height the current grid needs, so the node neither
+		// Ask for exactly the height the current view needs, so the node neither
 		// clips the last row nor reserves empty space for candidates it lacks.
-		getMinHeight: () => HEAD_H + 6 + Math.max(1, node._tcs?.rows || 1) * (TILE + 4),
+		getMinHeight: () => neededHeight(node),
 	});
 
 	const w = getWidget(node, "index");
@@ -175,12 +343,17 @@ app.registerExtension({
 					// Filenames are reused across runs; bust the browser cache.
 					stamp: Date.now(),
 				};
+				// The view mode is left alone on purpose. This node re-runs on
+				// EVERY queue (OUTPUT_NODE), including queues that were about
+				// the downstream stages, so snapping back to the grid each time
+				// would fight whoever is inspecting a candidate.
 				paint(this);
 			}
 		};
 
-		// Dragging the node's edge changes how many tiles fit, so rebuild then —
-		// watching our own element instead would just observe the width we set.
+		// Dragging the node's edge changes how many tiles fit, and rescales the
+		// single view's image box — so rebuild then. Watching our own element
+		// instead would just observe the width we set.
 		const onResize = nodeType.prototype.onResize;
 		nodeType.prototype.onResize = function (...a) {
 			const r = onResize?.apply(this, a);

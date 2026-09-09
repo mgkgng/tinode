@@ -21,11 +21,19 @@ does. Nothing downstream needs it while a continuation runs on DisableNoise, but
 the moment noise IS regenerated from this latent, that stamp is what keeps the
 candidate on its own seed instead of silently sliding to another.
 
+The widget has two views. The GRID shows every candidate at once, for the
+comparison the choice actually is; clicking one selects it and opens the SINGLE
+view, which shows that candidate large — a thumbnail is enough to tell two
+compositions apart, never enough to judge one. The single view carries ◀ ▶ so
+the batch can be walked at full size, and those buttons move the selection with
+the view: a cursor that pointed somewhere other than `index` would be this
+project's founding bug in miniature, a picture that has moved while the number
+under it has not.
+
 Index is 0-based on the wire and 1-based in the readout — matching Item Cursor,
-and keeping `seed = origin_seed + index` free of an off-by-one. Use the ◀ ▶
-buttons; out-of-range clamps rather than raising, because a cursor that refuses
-to move is worse than one that stops at the end, and the readout always shows
-where you actually are.
+and keeping `seed = origin_seed + index` free of an off-by-one. Out-of-range
+clamps rather than raising, because a cursor that refuses to move is worse than
+one that stops at the end, and the readout always shows where you actually are.
 """
 
 from __future__ import annotations
@@ -40,12 +48,26 @@ from ...base import TiNode, first
 from ...registry import register
 
 
+# Two sizes per candidate. The grid draws 56px tiles, so a tile that arrived at
+# full resolution would cost megabytes per run to render a stamp; the single view
+# is a real look at the picture and 320px would be a blurry insult. Publishing
+# both keeps the grid cheap AND the inspection honest, because the browser only
+# fetches a full image for the ONE candidate actually being viewed.
+_THUMB = 320
+_FULL = 1024
+
+
 def _publish(images):
-	"""Write the batch to ComfyUI's temp dir so the grid widget can show it.
+	"""Write the batch to ComfyUI's temp dir so the widget can show it.
 
 	The same route PreviewImage uses (`/view?...&type=temp`), rather than this
 	pack's RAM store: these are small stills, the store exists for multi-hundred
 	-megabyte clips, and temp is already swept by ComfyUI.
+
+	Each candidate is published twice — a `filename` thumbnail for the grid and a
+	`full` copy for the single view — plus the full copy's pixel size, so the
+	viewer can shape its box to the real aspect ratio instead of letterboxing a
+	portrait candidate into a square.
 
 	folder_paths is imported here rather than at module scope: it only exists
 	with ComfyUI's root on the path, and the test suite imports this module
@@ -59,13 +81,20 @@ def _publish(images):
 	published = []
 	for i in range(images.shape[0]):
 		arr = np.clip(images[i].cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
-		name = f"ti_cand_{tag}_{i:03d}.png"
-		# Downscale for the widget: a 5-up grid on a node never needs full size,
-		# and the browser would otherwise refetch several megabytes every run.
 		im = Image.fromarray(arr)
-		im.thumbnail((320, 320), Image.LANCZOS)
+
+		full = im.copy()
+		full.thumbnail((_FULL, _FULL), Image.LANCZOS)
+		full_name = f"ti_cand_{tag}_{i:03d}_full.png"
+		full.save(os.path.join(out, full_name), compress_level=4)
+
+		# thumbnail() mutates in place, so this must come after the full copy.
+		im.thumbnail((_THUMB, _THUMB), Image.LANCZOS)
+		name = f"ti_cand_{tag}_{i:03d}.png"
 		im.save(os.path.join(out, name), compress_level=4)
-		published.append({"filename": name, "subfolder": "", "type": "temp"})
+
+		published.append({"filename": name, "subfolder": "", "type": "temp",
+						  "full": full_name, "width": full.width, "height": full.height})
 	return published
 
 
