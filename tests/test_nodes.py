@@ -3900,6 +3900,60 @@ def test_noise_rotate_descendants_are_addressed_by_seed_and_index():
 	assert not torch.allclose(large[0:1], large[1:2]), "descendants must differ"
 
 
+def test_noise_rotate_keep_parent_returns_the_parent_bit_exact():
+	"""Descendant 1 must be the parent itself, not a reconstruction of it.
+
+	The point of the toggle is to keep a state you already judged good, so
+	"very close" is not good enough: if it were rebuilt as x0 + eps it would
+	carry float round-trip error and stop being the thing you chose.
+	"""
+	lat, den = _parent()
+	out = NoiseRotate().execute(lat, den, 30.0, 4, 900, keep_parent=True)[0]["samples"]
+	assert out.shape[0] == 4, "keep_parent replaces a descendant, it does not add one"
+	assert float((out[0:1] - lat["samples"]).abs().max()) == 0.0
+	# ...and the rest must still actually vary, or the toggle has eaten the batch.
+	assert not torch.allclose(out[1:2], out[2:3])
+
+
+def test_noise_rotate_keep_parent_leaves_the_other_addresses_alone():
+	"""Turning the toggle on must not silently rename descendants 2..count.
+
+	Prepending the parent would shift every other child one index along, and an
+	index IS an address here — Candidate Select reports `seed + index`. So this
+	pins that only descendant 1 changes.
+	"""
+	lat, den = _parent()
+	off = NoiseRotate().execute(lat, den, 30.0, 5, 900)[0]["samples"]
+	on = NoiseRotate().execute(lat, den, 30.0, 5, 900, keep_parent=True)[0]["samples"]
+	for i in range(1, off.shape[0]):
+		assert torch.allclose(off[i:i+1], on[i:i+1], atol=0), \
+			f"descendant {i} moved when keep_parent was turned on"
+	assert not torch.allclose(off[0:1], on[0:1]), "descendant 1 should have changed"
+
+
+def test_noise_rotate_keep_parent_puts_two_distances_in_one_batch():
+	"""The whole reason the toggle exists: a family at ONE theta cannot contain
+	both the faithful continuation and variations of it, because two children
+	each theta from the parent differ by at most 2*theta. keep_parent gets there
+	by letting one child sit at a different distance instead."""
+	lat, den = _parent(size=64)
+	x, x0 = lat["samples"], den["samples"]
+	out = NoiseRotate().execute(lat, den, 25.0, 4, 900, keep_parent=True)[0]["samples"]
+
+	def angle(a, b):
+		a, b = a.flatten().double(), b.flatten().double()
+		# Clamp: summing 16k float32 products lands cos at 1 +/- 1e-14, and acos
+		# is undefined a hair outside [-1, 1].
+		return math.degrees(math.acos(max(-1.0, min(1.0, float(a @ b / (a.norm() * b.norm()))))))
+
+	dists = [angle(out[i:i+1] - x0, x - x0) for i in range(4)]
+	# Not `== 0.0`: that same accumulation puts the parent at ~6e-06 degrees of
+	# itself. Bit-exactness is the other test's job; this one is about distance.
+	assert dists[0] < 1e-3, f"descendant 1 is the parent, so ~0 degrees, got {dists[0]}"
+	for d in dists[1:]:
+		assert abs(d - 25.0) < 1.0, f"the varying descendants stay at theta, got {d}"
+
+
 def test_noise_rotate_drops_the_parents_batch_index():
 	# Descendants are a new lineage; keeping the parent's slot would send anything
 	# that regenerates noise to the wrong seed.

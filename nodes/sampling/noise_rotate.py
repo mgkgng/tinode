@@ -83,6 +83,20 @@ committed, so rotating re-rolls the composition rather than varying it. Deeper i
 (sigma ~1.8 or below) the layout holds while the interpretation changes, which is
 what "show me alternatives" actually means.
 
+`keep_parent` answers a different question from either dial: "this state is
+already good — continue it, but show me alternatives too". Every descendant sits
+at the SAME theta from the parent, so a family cannot contain both the faithful
+continuation and variations of it; two children each theta from the parent can
+differ by at most 2*theta, which is why theta=0 makes them all identical no
+matter what spread says. That is a fact about distances, not about this code.
+`keep_parent` sidesteps it by letting ONE child sit at a different distance —
+zero — instead of trying to make zero-distance children differ. Descendant 1 is
+then the parent's own continuation, bit-exact, sharing a batch with its
+alternatives so they can be judged against each other rather than from memory.
+
+It REPLACES the first descendant instead of prepending one, so descendants
+2..count keep the seeds and indices they had with the toggle off.
+
 Variant i uses `variation_seed + i`, and the shared family direction is derived
 from the same integer — so one number still addresses the whole set. Note the
 pair (variation_seed, index) is what identifies a descendant, not a seed on its
@@ -132,7 +146,8 @@ def _project_out(x, a):
 	return x - float(xf @ af / (af @ af)) * a
 
 
-def rotate_family(x, x0, theta_deg: float, spread_deg: float, count: int, base_seed: int):
+def rotate_family(x, x0, theta_deg: float, spread_deg: float, count: int, base_seed: int,
+				  keep_parent: bool = False):
 	"""`count` descendants, each exactly `theta_deg` from the parent.
 
 	    v      one shared family direction, perpendicular to the residual
@@ -145,6 +160,13 @@ def rotate_family(x, x0, theta_deg: float, spread_deg: float, count: int, base_s
 	moves the children around each other WITHOUT moving them nearer or further
 	from the parent. That separation is the whole point: theta says how far the
 	family travels, spread says how far apart its members are.
+
+	`keep_parent` REPLACES child 0 with the parent itself, rather than inserting
+	it. Inserting would shift every other child one place along, and an index is
+	an address here — Candidate Select reports `seed + index`, and a descendant
+	is identified by (variation_seed, index). Replacing leaves children 1..n-1
+	byte-identical to what the same seed produces with the flag off, so turning
+	the toggle on does not silently rename anything you already chose.
 	"""
 	eps = x - x0
 	scale = eps.std()
@@ -159,6 +181,11 @@ def rotate_family(x, x0, theta_deg: float, spread_deg: float, count: int, base_s
 
 	out = []
 	for i in range(count):
+		if keep_parent and i == 0:
+			# x, not x0 + eps: the same tensor the sampler handed us, so this is
+			# the parent bit-for-bit and not a reconstruction of it.
+			out.append(x.clone())
+			continue
 		q = _project_out(_project_out(draw(base_seed + i), eps), v)
 		q = q / q.std() * scale
 		w = math.cos(p) * v + math.sin(p) * q
@@ -212,6 +239,17 @@ class NoiseRotate(TiNode):
 					"descendant identical, so `count` costs you N renders of one "
 					"image. The sibling angle it produces is capped by theta: at "
 					"theta 25 they can never be more than 34.8 degrees apart."}),
+				# Also last, and for the same positional reason as `spread`.
+				"keep_parent": ("BOOLEAN", {"default": False,
+					"label_on": "descendant 1 is the parent",
+					"label_off": "all descendants vary", "tooltip":
+					"Make the FIRST descendant the parent's own continuation, "
+					"unchanged, and vary the rest. Use it when the current state "
+					"is already good: you keep it in the same batch as its "
+					"alternatives, so Candidate Select compares them side by "
+					"side instead of you re-running the branch to get it back. "
+					"It replaces descendant 1 rather than adding one, so the "
+					"others keep the seeds and indices they already had."}),
 			},
 		}
 
@@ -222,7 +260,8 @@ class NoiseRotate(TiNode):
 	)
 	FUNCTION = "execute"
 
-	def execute(self, latent, denoised, theta, count, variation_seed, spread=90.0):
+	def execute(self, latent, denoised, theta, count, variation_seed, spread=90.0,
+				keep_parent=False):
 		x, x0 = latent["samples"], denoised["samples"]
 		if x.shape != x0.shape:
 			raise RuntimeError(
@@ -248,16 +287,24 @@ class NoiseRotate(TiNode):
 		spread = float(first(spread, 90.0))
 		base = int(first(variation_seed, 0))
 		n = int(first(count, 1))
+		keep = bool(first(keep_parent, False))
 		if n > 1 and spread < 1.0:
 			print(f"[tinode] Noise Rotate: spread={spread:g} — {n} descendants will be "
 				  f"near-identical; you are paying {n} renders for one image.")
-		variants = rotate_family(x, x0, theta, spread, n, base)
+		if keep and n == 1:
+			# Not an error — the graph still runs — but the node has been asked
+			# for one descendant and told to make it the parent, so it is doing
+			# nothing at all and the user almost certainly meant count > 1.
+			print("[tinode] Noise Rotate: keep_parent with count=1 — the only "
+				  "descendant IS the parent, so nothing varies. Raise count.")
+		variants = rotate_family(x, x0, theta, spread, n, base, keep)
 
 		out = latent.copy()
 		out["samples"] = torch.cat(variants, dim=0)
 		# The descendants are their own lineage now; the parent's batch position
 		# would mislead anything that regenerates noise from them.
 		out.pop("batch_index", None)
+		kept = " (descendant 1 is the parent)" if keep else ""
 		print(f"[tinode] Noise Rotate: {len(variants)} descendant(s) at "
-			  f"theta={theta:g}deg spread={spread:g}deg from seed {base}")
+			  f"theta={theta:g}deg spread={spread:g}deg from seed {base}{kept}")
 		return (out,)
