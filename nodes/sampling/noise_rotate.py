@@ -112,7 +112,7 @@ import math
 
 import torch
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 
 
@@ -286,7 +286,7 @@ class NoiseRotate(TiNode):
 		spread = float(first(spread, 90.0))
 		base = int(first(variation_seed, 0))
 		n = int(first(count, 1))
-		keep = bool(first(keep_parent, False))
+		keep = as_bool(keep_parent, False, where="Noise Rotate: keep_parent")
 		if n > 1 and spread < 1.0:
 			print(f"[tinode] Noise Rotate: spread={spread:g} — {n} descendants will be "
 				  f"near-identical; you are paying {n} renders for one image.")

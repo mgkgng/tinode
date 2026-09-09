@@ -22,6 +22,46 @@ def first(v, default=None):
 	return v
 
 
+# What a linked BOOLEAN can plausibly arrive as. Widget clicks give a real bool;
+# anything wired in can be a string, and Python's own bool() is dangerously
+# wrong about those — bool("false") and bool("0") are both True.
+_TRUE = {"true", "1", "yes", "on", "y", "t"}
+_FALSE = {"false", "0", "no", "off", "n", "f", ""}
+
+
+def as_bool(v, default=False, *, where="value"):
+	"""A BOOLEAN input as a real bool, whether it came from the widget or a link.
+
+	ComfyUI validates LITERAL widget values only — the check sits in the else
+	branch of the is-link test in execution.py — so a value arriving over a wire
+	reaches the node exactly as the upstream node emitted it. For an INT that
+	means an unclamped number; for a BOOLEAN it means possibly the STRING
+	"false", which `bool()` happily reports as True. A toggle that silently
+	turns itself on is the worst kind of bug this pack can ship, so parse rather
+	than cast, and refuse anything genuinely ambiguous instead of guessing.
+	"""
+	v = first(v, default)
+	if v is None:
+		return bool(default)
+	if isinstance(v, bool):          # before int: bool IS an int in Python
+		return v
+	if isinstance(v, (int, float)):
+		return v != 0
+	if isinstance(v, str):
+		s = v.strip().lower()
+		if s in _TRUE:
+			return True
+		if s in _FALSE:
+			return False
+		raise RuntimeError(
+			f"{where}: expected a true/false value, got {v!r}. Wire a boolean, "
+			f"or one of {sorted(_TRUE)} / {sorted(_FALSE)}."
+		)
+	raise RuntimeError(
+		f"{where}: expected a true/false value, got {type(v).__name__} ({v!r})."
+	)
+
+
 class TiNode:
 	# --- registry metadata (read by @register) -------------------------
 	# Override per node. NODE_ID defaults to the class name when None.

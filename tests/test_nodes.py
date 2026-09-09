@@ -3954,6 +3954,35 @@ def test_noise_rotate_keep_parent_puts_two_distances_in_one_batch():
 		assert abs(d - 25.0) < 1.0, f"the varying descendants stay at theta, got {d}"
 
 
+def test_noise_rotate_keep_parent_reads_a_linked_string_correctly():
+	"""A wired BOOLEAN can arrive as a string, and bool("false") is True.
+
+	ComfyUI only validates LITERAL widget values, so anything reaching this
+	input over a link is whatever the upstream node emitted. Casting would turn
+	the toggle ON when the graph said off — silently, with no error and a batch
+	that quietly lost a descendant.
+	"""
+	lat, den = _parent()
+	x = lat["samples"]
+	for falsey in (False, "false", "False", " no ", "0", 0):
+		out = NoiseRotate().execute(lat, den, 30.0, 3, 900, keep_parent=falsey)[0]["samples"]
+		assert not torch.allclose(out[0:1], x), f"{falsey!r} should mean OFF"
+	for truthy in (True, "true", "TRUE", " yes ", "1", 1):
+		out = NoiseRotate().execute(lat, den, 30.0, 3, 900, keep_parent=truthy)[0]["samples"]
+		assert float((out[0:1] - x).abs().max()) == 0.0, f"{truthy!r} should mean ON"
+
+
+def test_noise_rotate_keep_parent_refuses_a_value_it_cannot_read():
+	# Guessing is what got us here; an unreadable toggle must say so.
+	lat, den = _parent()
+	try:
+		NoiseRotate().execute(lat, den, 30.0, 2, 900, keep_parent="maybe")
+	except RuntimeError as exc:
+		assert "keep_parent" in str(exc) and "maybe" in str(exc)
+	else:
+		raise AssertionError("an unparseable boolean must raise")
+
+
 def test_noise_rotate_drops_the_parents_batch_index():
 	# Descendants are a new lineage; keeping the parent's slot would send anything
 	# that regenerates noise to the wrong seed.
