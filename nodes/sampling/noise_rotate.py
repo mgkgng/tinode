@@ -91,9 +91,49 @@ SD1.5 reference, "normal" scheduler, 12 total steps, measured on this pack:
     branch at step:      2      4      6      9     11
     residual share:  97.7%  89.3%  71.5%  21.6%   0.1%
 
-`residual share` is a ratio of variances, so it is scale-free and comparable
-across models whose latent scalings and sigma ranges share no units -- a
-rectified-flow schedule runs sigma 1 -> 0 where SD1.5 runs 14.6 -> 0.
+These are an EPS-PREDICTION model and do NOT transfer to rectified flow. SD1.5
+adds noise with an unbounded sigma so the share runs to ~100%; krea2/Flux mix it
+in, so the share cannot exceed roughly 50% however noisy the state is. Read the
+share against other checkpoints of the SAME model, never another model's table.
+
+## Which vector gets rotated depends on the model
+
+`x - x0` is the noise ONLY for additive models (x = x0 + sigma*eps). A mixture
+model -- rectified flow: Flux, SD3, krea -- builds its state as
+x = (1-sigma)*x0 + sigma*eps, so that same subtraction yields sigma*(eps - x0),
+noise AND signal together. Rotating it drags the signal off the trajectory:
+measured at theta 90, the x0 component came back at 1.00 where 0.125 was valid,
+and the implied noise at 3.5x what the schedule expects. The sampler then
+resumes on a state that is not on its path and cannot clean it, so the branch
+renders as a slightly-perturbed version of where it started rather than
+developing. No error anywhere -- the same silent shape as the stamp bug.
+
+Wire `model` + `current_sigma` and the node stops guessing. It asks the model
+how IT builds a noisy state, inverts that, rotates the recovered noise, and
+lets the model rebuild -- all in sampler space, because Flux's latent format
+shifts as well as scales (0.1159) and a rotation performed in the shifted space
+would not preserve the offset.
+
+    process_latent_in                -> sampler space
+    S = f(sigma, 0, x0)              -> the state with no noise in it
+    G = f(sigma, 1, x0) - S          -> the gain on unit noise (NOT sigma:
+                                        CONST applies an extra noise_scale)
+    eps = (x - S) / G                -> the model's own noise coordinate
+    rotate eps                       -> unchanged, this part was always right
+    f(sigma, eps')                   -> a valid state at the same sigma
+    process_latent_out
+
+There is no list of model names in this file and there must never be one. The
+contract is a capability, not an identity: if the model's noise mapping is
+affine and non-singular, the node can recover a noise coordinate, vary it and
+rebuild; otherwise it refuses and says which guarantee failed. Affinity is
+verified with a random probe rather than assumed -- a map can be exactly linear
+at 0, 1 and 2 while curved everywhere else, and would otherwise pass with the
+right gain.
+
+`model` and `current_sigma` are a PAIR. Half-wired raises, because the fallback
+is correct for additive models and wrong for flow, and choosing it silently is
+the whole bug.
 
 Measured on SD1.5: branch LATE. At sigma 4.86 (96% noise) x0_pred is barely
 committed, so rotating re-rolls the composition rather than varying it. Deeper in
@@ -150,6 +190,67 @@ def _family_seed(base: int) -> int:
 	return fam
 
 
+# How far the noise map may stray from affine, and how small its gain may get
+# before the inverse is meaningless. Both are checked, because neither implies
+# the other: a map that ignores its noise argument entirely is PERFECTLY affine
+# and completely useless (IMG_TO_IMG_FLOW is exactly that).
+_AFFINE_TOL = 1e-4
+_GAIN_MIN = 1e-4
+_PROBE_SEED = 0x5EED
+
+
+def _probe_noise_map(model_sampling, sigma, x0):
+	"""Recover the affine map noise -> state that THIS model uses, by asking it.
+
+	The node must not know what a "flow model" is. ComfyUI already owns the
+	parameterisation, and every scheme it ships builds a noisy state affinely in
+	the noise:
+
+	    EPS    x = x0            + sigma * noise
+	    CONST  x = (1-sigma)*x0  + sigma * noise_scale * noise
+
+	so two evaluations recover the whole map without naming a single model:
+
+	    S = f(sigma, 0, x0)          the state with no noise in it
+	    G = f(sigma, 1, x0) - S      the gain applied to unit noise
+
+	Note G is NOT sigma. CONST multiplies by an extra `noise_scale` that the
+	flow sampler exposes, and assuming a gain of sigma there is wrong by exactly
+	that factor -- silently, as an under-denoise, which is the failure this
+	whole path exists to prevent.
+
+	Affinity is then VERIFIED rather than assumed, with a deterministic random
+	probe. Checking only 0/1/2 is foolable: a map can be exactly linear at three
+	chosen points and curved everywhere else, and such a map passes with the
+	right gain while being wrong for real noise.
+
+	Raises when the map cannot be inverted, naming which guarantee failed.
+	"""
+	z = torch.zeros_like(x0)
+	S = model_sampling.noise_scaling(sigma, z, x0, False)
+	G = model_sampling.noise_scaling(sigma, torch.ones_like(x0), x0, False) - S
+
+	gen = torch.Generator().manual_seed(_PROBE_SEED)
+	r = torch.randn(x0.shape, dtype=torch.float32, generator=gen).to(x0.device, x0.dtype)
+	err = float((model_sampling.noise_scaling(sigma, r, x0, False) - (S + G * r)).abs().max())
+	if err > _AFFINE_TOL:
+		raise RuntimeError(
+			f"Noise Rotate: this model's noise mapping is not affine in the noise "
+			f"(probe error {err:.3g}). There is no noise coordinate to recover, so "
+			f"a rotation cannot be defined. Leave `model`/`current_sigma` unwired to "
+			f"use the additive path, or branch with a different model."
+		)
+	gmin = float(G.abs().min())
+	if gmin < _GAIN_MIN:
+		raise RuntimeError(
+			f"Noise Rotate: this state has no recoverable noise component "
+			f"(gain {gmin:.3g} at sigma {float(sigma):.4g}). Either the schedule has "
+			f"reached sigma 0 -- nothing is unresolved, so there is nothing to vary -- "
+			f"or this model's sampling ignores the noise it is given."
+		)
+	return S, G
+
+
 def _project_out(x, a):
 	"""`x` with its component along `a` removed: one step of Gram-Schmidt.
 
@@ -186,6 +287,21 @@ def rotate_family(x, x0, theta_deg: float, spread_deg: float, count: int, base_s
 	the toggle on does not silently rename anything you already chose.
 	"""
 	eps = x - x0
+	fam = _rotate_vectors(eps, theta_deg, spread_deg, count, base_seed,
+						  skip_first=keep_parent)
+	return [x.clone() if v is None else x0 + v for v in fam]
+
+
+def _rotate_vectors(eps, theta_deg: float, spread_deg: float, count: int,
+					base_seed: int, skip_first: bool = False):
+	"""`count` rotations of ONE vector. `None` marks a child left untouched.
+
+	Separated from the reconstruction because WHICH vector gets rotated depends
+	on the model: for an additive model it is the residual x - x0, for anything
+	else it is the noise coordinate recovered from the model's own noise map.
+	The rotation itself is identical either way -- that is the part that was
+	always right.
+	"""
 	scale = eps.std()
 	t, p = math.radians(theta_deg), math.radians(spread_deg)
 
@@ -198,19 +314,20 @@ def rotate_family(x, x0, theta_deg: float, spread_deg: float, count: int, base_s
 
 	out = []
 	for i in range(count):
-		if keep_parent and i == 0:
-			# x, not x0 + eps: the same tensor the sampler handed us, so this is
-			# the parent bit-for-bit and not a reconstruction of it.
-			out.append(x.clone())
+		if skip_first and i == 0:
+			# None, not a reconstruction: the caller returns the ORIGINAL tensor
+			# for this child, so the parent survives bit-for-bit and never pays
+			# the round trip through the model's noise map.
+			out.append(None)
 			continue
 		q = _project_out(_project_out(draw(base_seed + i), eps), v)
 		q = q / q.std() * scale
 		w = math.cos(p) * v + math.sin(p) * q
-		out.append(x0 + (math.cos(t) * eps + math.sin(t) * w))
+		out.append(math.cos(t) * eps + math.sin(t) * w)
 	return out
 
 
-def _diagnose(x, x0, variants, theta_deg, spread_deg, skip_first):
+def _diagnose(x, x0, variants, theta_deg, spread_deg, skip_first, rotated=None):
 	"""Print what the branch had to work with, and what it actually produced.
 
 	Two different failures look identical from the canvas — descendants that
@@ -220,16 +337,20 @@ def _diagnose(x, x0, variants, theta_deg, spread_deg, skip_first):
 	numbers below separate those, which no amount of staring at the previews
 	will.
 
-	`residual share` is scale-free (a ratio of variances), so it is comparable
-	across checkpoints AND across models with different latent scalings — which
-	matters, because a rectified-flow model's sigma runs 1 -> 0 while SD1.5's
-	runs 14.6 -> 0 and the raw numbers share no units.
+	`residual share` is scale-free, so it compares checkpoints OF THE SAME MODEL.
+	It does NOT compare across model families, and reading it as though it did is
+	a trap. An eps-prediction model ADDS noise with an unbounded sigma
+	(x = x0 + sigma*eps), so the share runs to ~100%. A rectified-flow model
+	MIXES it (x = (1-t)*x0 + t*eps), so the residual can never dominate x0 and
+	the share tops out near 50% even at 100% noise. 45% is starved on the first
+	and nearly maximal on the second.
 	"""
 	eps = x - x0
 	s_x0, s_eps = float(x0.std()), float(eps.std())
 	share = 100.0 * s_eps ** 2 / (s_eps ** 2 + s_x0 ** 2) if (s_eps or s_x0) else 0.0
+	ratio = s_eps / s_x0 if s_x0 else float("inf")
 	print(f"[tinode]   parent: std(x0)={s_x0:.4f} std(residual)={s_eps:.4f} "
-		  f"-> residual is {share:.1f}% of the state")
+		  f"-> residual/x0 = {ratio:.2f}, {share:.1f}% of the state")
 
 	# What the dials asked for: two children each theta from the parent, fanned
 	# out by spread, sit acos(cos^2 t + sin^2 t cos^2 s) apart.
@@ -237,12 +358,16 @@ def _diagnose(x, x0, variants, theta_deg, spread_deg, skip_first):
 	want = math.degrees(math.acos(max(-1.0, min(1.0,
 		math.cos(t) ** 2 + math.sin(t) ** 2 * math.cos(p) ** 2))))
 
-	# Cap the sample: this is O(n^2) dot products over a full latent.
-	pool = [v for v in variants[1:]] if skip_first else list(variants)
-	pool = pool[:6]
+	# Measure in the coordinate the rotation actually happened in. Under the
+	# parameterisation-aware path that is the model's noise coordinate, not
+	# `variant - x0` -- the reconstruction is affine but not an isometry of
+	# node space, so angles measured there would not be the theta asked for and
+	# the readout would accuse the node of a fault it does not have.
+	src = rotated if rotated is not None else variants
+	pool = [v for v in (src[1:] if skip_first else src) if v is not None][:6]
 	got = None
 	if len(pool) > 1:
-		ds = [(v - x0).flatten().double() for v in pool]
+		ds = [(v if rotated is not None else v - x0).flatten().double() for v in pool]
 		cos = []
 		for i in range(len(ds)):
 			for j in range(i + 1, len(ds)):
@@ -254,14 +379,63 @@ def _diagnose(x, x0, variants, theta_deg, spread_deg, skip_first):
 
 	if got is None:
 		print(f"[tinode]   siblings: n/a (need 2+ varying descendants), asked for {want:.1f}deg")
+
 	else:
 		print(f"[tinode]   siblings: {got:.1f}deg apart in latent space (asked for {want:.1f}deg)")
 		if abs(got - want) < 2.0 and got > 10.0:
 			print("[tinode]   -> the latents ARE separated. If the images still look "
 				  "alike, the MODEL is collapsing them, not this node.")
-	if share < 20.0:
-		print(f"[tinode]   -> only {share:.1f}% of the state is still residual; there is "
-			  f"little left to turn. Branch earlier.")
+	# No fixed percentage: the share's CEILING is model-dependent (see above), so
+	# an absolute threshold cried wolf on flow models, where 45% is near maximal.
+	# The ratio is the safer alarm -- a residual under half the prediction's
+	# magnitude is late in any parameterisation.
+	if ratio < 0.5:
+		print(f"[tinode]   -> the residual is only {ratio:.2f}x the prediction: late in "
+			  f"the schedule, little left to turn. Compare against an EARLIER "
+			  f"checkpoint of this same model before concluding anything.")
+
+
+
+def rotate_in_noise_space(x, x0, model, sigma, theta_deg: float, spread_deg: float,
+						  count: int, base_seed: int, keep_parent: bool = False):
+	"""Rotate the model's OWN noise coordinate, and let the model rebuild the state.
+
+	    process_latent_in            -> sampler space (Flux shifts as well as scales)
+	    S, G = probe(noise_scaling)  -> the model's affine noise map
+	    eps  = (x - S) / G           -> its noise coordinate
+	    rotate eps
+	    noise_scaling(sigma, eps')   -> a VALID state at the same sigma
+	    process_latent_out           -> back to the space the graph speaks
+
+	The additive path rotates `x - x0`, which for an additive model IS the noise.
+	For a mixture model x_t = (1-t)*x0 + t*eps that same subtraction gives
+	t*(eps - x0) -- noise AND signal -- so rotating it drags the signal off the
+	manifold: measured at theta 90 the x0 component came back at 1.00 where 0.125
+	is valid, and the implied noise at 3.5x. The sampler then resumes on a state
+	that is not on its trajectory and cannot clean it, which reads as "the
+	branch never developed".
+
+	Working in the model's own coordinate makes that impossible by construction,
+	for every parameterisation ComfyUI has and any future one that stays affine.
+	"""
+	pin = model.get_model_object("process_latent_in")
+	pout = model.get_model_object("process_latent_out")
+	ms = model.get_model_object("model_sampling")
+
+	xs, x0s = pin(x), pin(x0)
+	sig = torch.as_tensor(sigma, dtype=xs.dtype, device=xs.device)
+	S, G = _probe_noise_map(ms, sig, x0s)
+
+	eps = (xs - S) / G
+	fam = _rotate_vectors(eps, theta_deg, spread_deg, count, base_seed,
+						  skip_first=keep_parent)
+	out = []
+	for v in fam:
+		if v is None:
+			out.append(x.clone())          # untouched, never round-tripped
+		else:
+			out.append(pout(ms.noise_scaling(sig, v, x0s, False)))
+	return out, eps, fam
 
 
 @register
@@ -321,6 +495,24 @@ class NoiseRotate(TiNode):
 					"It replaces descendant 1 rather than adding one, so the "
 					"others keep the seeds and indices they already had."}),
 			},
+			"optional": {
+				# A PAIR. Together they make the node parameterisation-aware; the
+				# model carries its own noise map and latent scaling, the sigma
+				# says where this latent actually is. Neither is guessed: one
+				# without the other is an error, because silently falling back to
+				# the additive path is exactly the failure this pair prevents.
+				"model": ("MODEL", {"tooltip":
+					"The model this latent came from. Wire it (with current_sigma) "
+					"for anything that is not a plain additive/eps model — Flux, "
+					"SD3, krea, any rectified-flow checkpoint. The node asks the "
+					"model how it builds a noisy state rather than assuming."}),
+				# forceInput so it exists only when wired: a widget would always
+				# hold a value and the pair rule could never see it as absent.
+				"current_sigma": ("FLOAT", {"forceInput": True, "tooltip":
+					"The sigma this latent is AT — not where the next stage ends. "
+					"Wire Sigma Segment's `start_sigma` from the segment that is "
+					"about to run, which is the same boundary this latent stopped on."}),
+			},
 		}
 
 	RETURN_TYPES = ("LATENT",)
@@ -331,7 +523,7 @@ class NoiseRotate(TiNode):
 	FUNCTION = "execute"
 
 	def execute(self, latent, denoised, theta, count, variation_seed, spread=90.0,
-				keep_parent=False):
+				keep_parent=False, model=None, current_sigma=None):
 		x, x0 = latent["samples"], denoised["samples"]
 		if x.shape != x0.shape:
 			raise RuntimeError(
@@ -367,7 +559,32 @@ class NoiseRotate(TiNode):
 			# nothing at all and the user almost certainly meant count > 1.
 			print("[tinode] Noise Rotate: keep_parent with count=1 — the only "
 				  "descendant IS the parent, so nothing varies. Raise count.")
-		variants = rotate_family(x, x0, theta, spread, n, base, keep)
+		model = first(model, None)
+		sigma = first(current_sigma, None)
+		if (model is None) != (sigma is None):
+			missing = "current_sigma" if sigma is None else "model"
+			raise RuntimeError(
+				f"Noise Rotate: `model` and `current_sigma` work as a pair and only "
+				f"`{missing}` is missing. Wire both to rotate in the model's own noise "
+				f"coordinate, or neither to use the additive path. Half-wired would "
+				f"silently fall back to the additive path, which is wrong for any "
+				f"rectified-flow model and fails as an image that never develops."
+			)
+
+		# theta 0 is the control the whole design rests on, so it returns the
+		# ORIGINAL tensor rather than a reconstruction of it. Every path below
+		# would only add float error to something already exact.
+		if math.isclose(theta % 360.0, 0.0, abs_tol=1e-9):
+			variants, rotated, coord = [x.clone() for _ in range(n)], None, None
+		elif model is not None:
+			variants, coord, rotated = rotate_in_noise_space(
+				x, x0, model, sigma, theta, spread, n, base, keep)
+		else:
+			print("[tinode]   using the ADDITIVE path (x = x0 + sigma*eps): correct for "
+				  "SD/SDXL, WRONG for rectified flow. Wire `model` + `current_sigma` "
+				  "if this is Flux/SD3/krea.")
+			variants = rotate_family(x, x0, theta, spread, n, base, keep)
+			coord, rotated = None, None
 
 		out = latent.copy()
 		out["samples"] = torch.cat(variants, dim=0)
@@ -378,7 +595,7 @@ class NoiseRotate(TiNode):
 		print(f"[tinode] Noise Rotate: {len(variants)} descendant(s) at "
 			  f"theta={theta:g}deg spread={spread:g}deg from seed {base}{kept}")
 		try:
-			_diagnose(x, x0, variants, theta, spread, keep)
+			_diagnose(x, x0, variants, theta, spread, keep, rotated)
 		except Exception as exc:  # noqa: BLE001
 			# Diagnostics must never cost you the branch.
 			print(f"[tinode]   (diagnostics unavailable: {exc!r})")

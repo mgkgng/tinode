@@ -66,7 +66,7 @@ from tinode.nodes.sampling.seed_range_noise import Noise_SeedRange, seeds_for  #
 from tinode.nodes.sampling.sigma_segment import SigmaSegment, slice_sigmas  # noqa: E402
 from tinode.nodes.sampling.candidate_select import CandidateSelect  # noqa: E402
 from tinode.nodes.sampling.noise_rotate import (  # noqa: E402
-	NoiseRotate, rotate_family,
+	NoiseRotate, rotate_family, _probe_noise_map,
 )
 from tinode.nodes.sampling.step_stamp import (  # noqa: E402
 	StampStep, ResumeStep, stamped_step,
@@ -3981,6 +3981,164 @@ def test_noise_rotate_keep_parent_refuses_a_value_it_cannot_read():
 		assert "keep_parent" in str(exc) and "maybe" in str(exc)
 	else:
 		raise AssertionError("an unparseable boolean must raise")
+
+
+class _FakeSampling:
+	"""The two shapes ComfyUI actually ships, as plain maths.
+
+	Local rather than imported so the suite stays standalone. The node is not
+	tested against these CLASSES anyway -- its contract is "any affine,
+	invertible noise map" -- and the real comfy.model_sampling implementations
+	were probed separately and behave identically.
+	"""
+	def __init__(self, kind, noise_scale=1.0):
+		self.kind, self.noise_scale = kind, noise_scale
+
+	def noise_scaling(self, sigma, noise, latent_image, max_denoise=False):
+		if self.kind == "eps":                       # x = x0 + sigma*eps
+			return latent_image + sigma * noise
+		if self.kind == "const":                     # x = (1-s)*x0 + s*gain*eps
+			return sigma * (self.noise_scale * noise) + (1.0 - sigma) * latent_image
+		if self.kind == "deaf":                      # ignores the noise entirely
+			return latent_image
+		if self.kind == "bent":                      # linear at 0,1,2 -- curved elsewhere
+			return latent_image + sigma * (noise + 0.15 * noise * (noise - 1) * (noise - 2))
+		raise AssertionError(self.kind)
+
+
+class _FakeModel:
+	"""A MODEL stand-in: a noise map plus a latent format with a real shift,
+	because Flux/krea have one (0.1159) and SD1.5 does not."""
+	def __init__(self, sampling, scale=0.3611, shift=0.1159):
+		self.sampling, self.scale, self.shift = sampling, scale, shift
+
+	def get_model_object(self, name):
+		if name == "model_sampling":
+			return self.sampling
+		if name == "process_latent_in":
+			return lambda l: (l - self.shift) * self.scale
+		if name == "process_latent_out":
+			return lambda l: (l / self.scale) + self.shift
+		raise KeyError(name)
+
+
+def _flow_state(sigma=0.875, size=16, seed=0):
+	"""A latent as a MIXTURE model would hand it over, in node space."""
+	g = torch.Generator().manual_seed(seed)
+	x0 = torch.randn(1, 4, size, size, generator=g) * 2.348
+	eps = torch.randn(1, 4, size, size, generator=g)
+	x = sigma * eps + (1.0 - sigma) * x0                 # sampler space
+	m = _FakeModel(_FakeSampling("const"))
+	to_node = lambda l: l / m.scale + m.shift
+	return {"samples": to_node(x)}, {"samples": to_node(x0)}, x0, m, sigma
+
+
+def _validity(variant_node, x0_sampler, m, sigma):
+	"""(x0 coefficient, implied noise std) of a state, in SAMPLER space.
+	A valid mixture state has coefficient 1-sigma and unit noise."""
+	v = (variant_node - m.shift) * m.scale
+	a, b = v.flatten().double(), x0_sampler.flatten().double()
+	coef = float(a @ b / (b @ b))
+	implied = float(((v - (1.0 - sigma) * x0_sampler) / sigma).std())
+	return coef, implied
+
+
+def test_noise_rotate_flow_reconstruction_stays_on_the_manifold():
+	"""The bug this path exists for, pinned.
+
+	Rotating `x - x0` on a MIXTURE model rotates noise AND signal together, so
+	the reconstruction lands off the trajectory: the x0 component comes back at
+	full strength instead of faded to 1-sigma, and the implied noise at several
+	times what the schedule expects. The sampler then resumes on a state that is
+	not on its path and cannot clean it -- which reads as a branch that never
+	develops rather than as an error.
+	"""
+	lat, den, x0s, m, sigma = _flow_state()
+	valid_coef = 1.0 - sigma
+
+	broken = NoiseRotate().execute(lat, den, 90.0, 2, 900)[0]["samples"]
+	c, i = _validity(broken[0:1], x0s, m, sigma)
+	assert abs(c - valid_coef) > 0.5, "the additive path should be visibly invalid here"
+	assert i > 2.0, "and should imply far too much noise"
+
+	fixed = NoiseRotate().execute(lat, den, 90.0, 2, 900,
+								  model=m, current_sigma=sigma)[0]["samples"]
+	for k in range(2):
+		c, i = _validity(fixed[k:k + 1], x0s, m, sigma)
+		assert abs(c - valid_coef) < 0.02, f"x0 coefficient {c:.3f}, valid {valid_coef:.3f}"
+		assert abs(i - 1.0) < 0.05, f"implied noise std {i:.3f}, valid 1.0"
+	assert not torch.allclose(fixed[0:1], fixed[1:2]), "and they must still differ"
+
+
+def test_noise_rotate_noise_coordinate_round_trips():
+	"""Exercises decompose -> reconstruct DIRECTLY, because theta=0 short-circuits.
+
+	The short-circuit is deliberate (it keeps theta=0 bit-exact) but it means the
+	usual control no longer touches this path, so the round trip is pinned here
+	instead. Not bit-exact: it goes through two latent-format conversions and a
+	division.
+	"""
+	lat, den, _, m, sigma = _flow_state()
+	x, x0 = lat["samples"], den["samples"]
+	ms = m.get_model_object("model_sampling")
+	pin, pout = m.get_model_object("process_latent_in"), m.get_model_object("process_latent_out")
+	xs, x0s = pin(x), pin(x0)
+	S, G = _probe_noise_map(ms, torch.tensor(sigma), x0s)
+	eps = (xs - S) / G
+	back = pout(ms.noise_scaling(torch.tensor(sigma), eps, x0s, False))
+	assert float((back - x).abs().max()) < 1e-5
+
+
+def test_noise_rotate_probe_recovers_a_gain_that_is_not_sigma():
+	# CONST applies an extra noise_scale. Assuming a gain of sigma is wrong by
+	# exactly that factor, silently, as an under-denoise.
+	x0 = torch.randn(1, 4, 8, 8)
+	sigma = torch.tensor(0.875)
+	_, G = _probe_noise_map(_FakeSampling("const", noise_scale=1.7), sigma, x0)
+	assert abs(float(G.abs().mean()) - 0.875 * 1.7) < 1e-5
+
+
+def test_noise_rotate_refuses_a_noise_map_it_cannot_invert():
+	x0 = torch.randn(1, 4, 8, 8)
+	sigma = torch.tensor(0.875)
+	# Ignores its noise argument: perfectly affine, and perfectly useless. The
+	# affinity check alone would PASS this, which is why the gain is checked too.
+	try:
+		_probe_noise_map(_FakeSampling("deaf"), sigma, x0)
+	except RuntimeError as exc:
+		assert "no recoverable noise component" in str(exc)
+	else:
+		raise AssertionError("a zero-gain noise map must be refused")
+	# Linear at 0, 1 and 2 by construction, curved everywhere else: a three-point
+	# probe accepts it with the right gain. The random probe is what catches it.
+	try:
+		_probe_noise_map(_FakeSampling("bent"), sigma, x0)
+	except RuntimeError as exc:
+		assert "not affine" in str(exc)
+	else:
+		raise AssertionError("a non-affine noise map must be refused")
+
+
+def test_noise_rotate_model_and_sigma_are_a_pair():
+	# Half-wired must not fall back silently: the fallback is correct for
+	# additive models and wrong for flow, which is the whole bug.
+	lat, den, _, m, sigma = _flow_state()
+	for kw in ({"model": m}, {"current_sigma": sigma}):
+		try:
+			NoiseRotate().execute(lat, den, 45.0, 2, 900, **kw)
+		except RuntimeError as exc:
+			assert "pair" in str(exc)
+		else:
+			raise AssertionError(f"half-wired {list(kw)} must raise")
+
+
+def test_noise_rotate_theta_zero_is_exact_on_every_path():
+	lat, den, _, m, sigma = _flow_state()
+	x = lat["samples"]
+	for kw in ({}, {"model": m, "current_sigma": sigma}):
+		out = NoiseRotate().execute(lat, den, 0.0, 3, 900, **kw)[0]["samples"]
+		for k in range(3):
+			assert float((out[k:k + 1] - x).abs().max()) == 0.0
 
 
 def test_noise_rotate_drops_the_parents_batch_index():
