@@ -3528,11 +3528,43 @@ def test_sigma_segment_refuses_bad_ranges():
 	assert len(slice_sigmas(sig, 14, 20)) == 7
 
 
-def test_sigma_segment_node_reports_start_sigma():
-	seg, start_sigma = SigmaSegment().execute([14.61, 10.74, 8.08, 6.20, 4.85, 3.86], 2, 4)
+def test_sigma_segment_node_reports_both_ends():
+	"""start_sigma puts the stage's noise level on the canvas; end_sigma is what
+	the OUTPUT latent will be sitting at, and is what Stamp Step carries onward.
+	A step number alone cannot substitute: the same index is a different noise
+	level under a different scheduler."""
+	seg, start_sigma, end_sigma = SigmaSegment().execute(
+		[14.61, 10.74, 8.08, 6.20, 4.85, 3.86], 2, 4)
 	assert seg == [8.08, 6.20, 4.85]
 	assert abs(start_sigma - 8.08) < 1e-6
+	assert abs(end_sigma - 4.85) < 1e-6
 
+
+
+def test_schedule_info_shows_where_the_noise_actually_is():
+	"""The reading that makes a bad checkpoint obvious before a render.
+
+	A step number is not a noise level. Under karras an 8-step flow schedule is
+	97.8% denoised by step 5; under a linear one it is 62.5%. Branching at
+	"step 5" therefore means two completely different things, decided by a
+	dropdown in another group, and nothing on the canvas said so.
+	"""
+	from tinode.nodes.sampling.schedule_info import describe
+	karras = [1.0, 0.5408, 0.2757, 0.1308, 0.0568, 0.0220, 0.0073, 0.0020, 0.0]
+	table = describe(karras, marks=[1, 5, 7])
+	lines = table.splitlines()
+	assert "checkpoint" in lines[2] and "checkpoint" in lines[6]
+	assert "54.1%" in lines[2], lines[2]      # step 1 still has noise
+	assert "2.2%" in lines[6], lines[6]       # step 5 has almost none
+	# percentages are relative to the schedule's own top, so any model reads the same
+	assert "100.0%" in lines[1]
+
+
+def test_schedule_info_survives_a_typo_in_the_marks():
+	# The marks are decoration; a typo there must not cost a queued run.
+	from tinode.nodes.sampling.schedule_info import ScheduleInfo
+	out = ScheduleInfo().execute([1.0, 0.5, 0.0], marks="1, oops, 2")
+	assert "checkpoint" in out["result"][0]
 
 
 # ------------------------------------------------------------ candidate select
@@ -4120,16 +4152,32 @@ def test_noise_rotate_refuses_a_noise_map_it_cannot_invert():
 
 
 def test_noise_rotate_model_and_sigma_are_a_pair():
-	# Half-wired must not fall back silently: the fallback is correct for
-	# additive models and wrong for flow, which is the whole bug.
+	"""Half-wired must not fall back silently: the fallback is correct for
+	additive models and wrong for flow, which is the whole bug."""
 	lat, den, _, m, sigma = _flow_state()
-	for kw in ({"model": m}, {"current_sigma": sigma}):
-		try:
-			NoiseRotate().execute(lat, den, 45.0, 2, 900, **kw)
-		except RuntimeError as exc:
-			assert "pair" in str(exc)
-		else:
-			raise AssertionError(f"half-wired {list(kw)} must raise")
+	try:
+		NoiseRotate().execute(lat, den, 45.0, 2, 900, model=m)
+	except RuntimeError as exc:
+		assert "carries no sigma" in str(exc)
+	else:
+		raise AssertionError("model without a sigma must raise")
+	try:
+		NoiseRotate().execute(lat, den, 45.0, 2, 900, current_sigma=sigma)
+	except RuntimeError as exc:
+		assert "`model` is not wired" in str(exc)
+	else:
+		raise AssertionError("a sigma without a model must raise")
+
+
+def test_noise_rotate_takes_the_sigma_from_the_latents_stamp():
+	"""The point of the stamp: nothing to wire, and it cannot be the WRONG sigma
+	because the stage that produced this tensor is what wrote it."""
+	lat, den, _, m, sigma = _flow_state()
+	stamped = dict(lat); stamped["ti_sigma"] = sigma
+	from_stamp = NoiseRotate().execute(stamped, den, 45.0, 2, 900, model=m)[0]["samples"]
+	by_hand = NoiseRotate().execute(lat, den, 45.0, 2, 900,
+									model=m, current_sigma=sigma)[0]["samples"]
+	assert torch.allclose(from_stamp, by_hand, atol=0)
 
 
 def test_noise_rotate_theta_zero_is_exact_on_every_path():

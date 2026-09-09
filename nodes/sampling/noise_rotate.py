@@ -561,14 +561,29 @@ class NoiseRotate(TiNode):
 				  "descendant IS the parent, so nothing varies. Raise count.")
 		model = first(model, None)
 		sigma = first(current_sigma, None)
-		if (model is None) != (sigma is None):
-			missing = "current_sigma" if sigma is None else "model"
+		stamped = latent.get("ti_sigma")
+		if sigma is None and stamped is not None:
+			# The latent knows where it is. A stamped sigma cannot be the wrong
+			# segment's, which a hand-wired one can: it was written by the stage
+			# that actually produced this tensor.
+			sigma = float(stamped)
+			from_stamp = True
+		else:
+			from_stamp = False
+
+		if sigma is not None and model is None:
 			raise RuntimeError(
-				f"Noise Rotate: `model` and `current_sigma` work as a pair and only "
-				f"`{missing}` is missing. Wire both to rotate in the model's own noise "
-				f"coordinate, or neither to use the additive path. Half-wired would "
-				f"silently fall back to the additive path, which is wrong for any "
-				f"rectified-flow model and fails as an image that never develops."
+				"Noise Rotate: a sigma is available but `model` is not wired. The "
+				"sigma alone is not enough — the model is what says how a noisy "
+				"state is built, and without it the node cannot invert anything. "
+				"Wire MODEL (the same one feeding the guider)."
+			)
+		if model is not None and sigma is None:
+			raise RuntimeError(
+				"Noise Rotate: `model` is wired but this latent carries no sigma. "
+				"Either wire Sigma Segment's `end_sigma` into the Stamp Step that "
+				"produced this latent — then it travels automatically — or wire "
+				"`current_sigma` here directly with the sigma this latent is AT."
 			)
 
 		# theta 0 is the control the whole design rests on, so it returns the
@@ -583,9 +598,8 @@ class NoiseRotate(TiNode):
 			# the wrong segment's start_sigma is silent and catastrophic: at
 			# sigma 1.0 the signal term (1-sigma)*x0 vanishes and the rebuilt
 			# state contains no image at all, only noise.
-			print(f"[tinode]   model-aware path: sigma={float(sigma):.4f} "
-				  f"(signal weight {1.0 - float(sigma):.3f}) — this MUST be the sigma "
-				  f"the latent is at, i.e. the START of the segment about to run.")
+			src = "from the latent's stamp" if from_stamp else "wired by hand"
+			print(f"[tinode]   model-aware path: sigma={float(sigma):.4f} ({src})")
 			if float(sigma) >= 0.999:
 				print("[tinode]   !! sigma is ~1.0: the reconstruction keeps NO signal. "
 					  "You have almost certainly wired the previous segment's "

@@ -78,10 +78,22 @@ class SigmaSegment(TiNode):
 
 	# start_sigma is informational: it is the noise level this stage resumes at,
 	# and seeing it on the canvas is what makes an abstract step number concrete.
-	RETURN_TYPES = ("SIGMAS", "FLOAT")
-	RETURN_NAMES = ("sigmas", "start_sigma")
+	RETURN_TYPES = ("SIGMAS", "FLOAT", "FLOAT")
+	RETURN_NAMES = ("sigmas", "start_sigma", "end_sigma")
+	OUTPUT_TOOLTIPS = (
+		"The slice of the schedule this stage samples.",
+		"The noise level this stage STARTS at — informational, so an abstract "
+		"step number becomes a concrete amount of noise on the canvas.",
+		"The noise level this stage ENDS at, which is where its output latent "
+		"will be sitting. Wire it into Stamp Step so the latent carries its own "
+		"noise level onward: a latent is meaningless without its sigma, and the "
+		"next stage's Noise Rotate needs that number to vary it correctly.",
+	)
 	FUNCTION = "execute"
 
 	def execute(self, sigmas, start_step, end_step):
 		seg = slice_sigmas(sigmas, start_step, end_step)
-		return (seg, float(seg[0]))
+		# end_sigma is the LAST value of the slice, i.e. the noise level the
+		# stage's output actually stops at. Declared after start_sigma so the
+		# existing output order is untouched and saved graphs keep their links.
+		return (seg, float(seg[0]), float(seg[-1]))

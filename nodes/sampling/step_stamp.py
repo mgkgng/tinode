@@ -65,7 +65,16 @@ from ...registry import register
 STAMP_KEY = "ti_step"
 
 
-def stamp(latent: dict, step: int) -> dict:
+SIGMA_KEY = "ti_sigma"
+
+
+def stamped_sigma(latent: dict):
+	"""The noise level a latent says it is at, or None if nothing stamped one."""
+	value = latent.get(SIGMA_KEY)
+	return None if value is None else float(value)
+
+
+def stamp(latent: dict, step: int, sigma=None) -> dict:
 	"""Return a copy of `latent` carrying `step`, or raise if that goes backwards.
 
 	A copy rather than a mutation: the input latent may be feeding other nodes,
@@ -75,6 +84,10 @@ def stamp(latent: dict, step: int) -> dict:
 	step = int(step)
 	if step < 0:
 		raise ValueError(f"Stamp Step: step must be >= 0, got {step}.")
+	if sigma is not None:
+		sigma = float(sigma)
+		if sigma < 0.0:
+			raise ValueError(f"Stamp Step: sigma must be >= 0, got {sigma}.")
 
 	previous = latent.get(STAMP_KEY)
 	if previous is not None and step < int(previous):
@@ -89,6 +102,13 @@ def stamp(latent: dict, step: int) -> dict:
 
 	out = latent.copy()
 	out[STAMP_KEY] = step
+	if sigma is not None:
+		# The step says WHERE on the schedule; the sigma says HOW MUCH noise is
+		# actually left there. They are not interchangeable: the same step number
+		# means wildly different noise levels under different schedulers (karras
+		# reaches 2% noise by step 5 of 8 where a linear flow schedule still has
+		# 37%). Anything reconstructing a state needs the sigma, not the index.
+		out[SIGMA_KEY] = sigma
 	return out
 
 
@@ -115,6 +135,18 @@ class StampStep(TiNode):
 					"Sigma Segment `end_step`. Wire the stage's checkpoint control "
 					"to both and they cannot drift apart."}),
 			},
+			"optional": {
+				# Optional so every existing graph keeps working unchanged; a
+				# latent with no sigma stamp simply cannot be varied by the
+				# model-aware path, and Noise Rotate says so rather than guessing.
+				"sigma": ("FLOAT", {"forceInput": True, "tooltip":
+					"The noise level this stage ended at — wire Sigma Segment's "
+					"`end_sigma`. The latent then carries it onward, so the next "
+					"stage's Noise Rotate knows how much noise it is looking at "
+					"without anything else being wired. A step number alone is not "
+					"enough: the same step means different noise on different "
+					"schedulers."}),
+			},
 		}
 
 	RETURN_TYPES = ("LATENT",)
@@ -124,9 +156,16 @@ class StampStep(TiNode):
 	)
 	FUNCTION = "execute"
 
-	def execute(self, latent, step):
-		out = stamp(latent, int(first(step, 0)))
-		print(f"[tinode] Stamp Step: latent is at step {out[STAMP_KEY]}")
+	def execute(self, latent, step, sigma=None):
+		sig = first(sigma, None)
+		out = stamp(latent, int(first(step, 0)), None if sig is None else float(sig))
+		where = f"step {out[STAMP_KEY]}"
+		if SIGMA_KEY in out:
+			where += f", sigma {out[SIGMA_KEY]:.4f}"
+		else:
+			where += " (no sigma — wire Sigma Segment `end_sigma` if this latent "
+			where += "will be branched)"
+		print(f"[tinode] Stamp Step: latent is at {where}")
 		return (out,)
 
 
