@@ -29,7 +29,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 
 _HEAD_FILL = ["auto", "first_frame", "last_frame", "color", "rewind"]
@@ -218,7 +218,7 @@ class FramePad(TiNode):
 		head_fill = first(head_fill, "auto")
 		tail_fill = first(tail_fill, "last_frame")
 		color = _hex_rgb(first(pad_color, "#000000"))
-		auto = bool(first(auto_length, True))
+		auto = as_bool(auto_length, True, where="Frame Pad: auto_length")
 
 		# Splices sit next to the base and count as content for the length target.
 		pre_vid = first(prepend_video)

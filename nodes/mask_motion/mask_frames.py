@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import torch
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 
 # 2^32 / golden ratio: consecutive multiples land far apart, which is the whole
@@ -163,7 +163,7 @@ class MaskFrames(TiNode):
 				f"frame(s) and start={int(first(start, 0))} is past the end.")
 		base = int(first(seed, 0))
 		pad = int(first(pad, 0))
-		sq = bool(first(square, True))
+		sq = as_bool(square, True, where="Mask Frames: square")
 		masks = [m[i:i + 1].contiguous() for i in idx]
 		seeds = [seed_for(base, i) for i in idx]
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import torch
 
-from ...base import TiNode, first as _first
+from ...base import TiNode, as_bool, first as _first
 from ...registry import register
 from .batch_drop import parse_keep
 from .batch_pick import parse_pick
@@ -49,7 +49,8 @@ class MaskDropIndices(TiNode):
 
 	def execute(self, masks, indices, one_based=True):
 		batch = _collapse(masks)
-		keep = parse_keep(_first(indices, ""), batch.shape[0], _first(one_based, True))
+		keep = parse_keep(_first(indices, ""), batch.shape[0],
+						  as_bool(one_based, True, where="Mask Drop Indices: one_based"))
 		if keep is None:
 			return (batch,)
 		return (batch[torch.tensor(keep, dtype=torch.long)],)
@@ -79,7 +80,8 @@ class MaskPickIndices(TiNode):
 
 	def execute(self, masks, indices, one_based=True):
 		batch = _collapse(masks)
-		keep = parse_pick(_first(indices, ""), batch.shape[0], _first(one_based, True))
+		keep = parse_pick(_first(indices, ""), batch.shape[0],
+						  as_bool(one_based, True, where="Mask Pick Indices: one_based"))
 		if keep is None:
 			return (batch,)
 		return (batch[torch.tensor(keep, dtype=torch.long)],)

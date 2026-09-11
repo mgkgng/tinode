@@ -35,7 +35,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from ...base import TiNode, first as _first
+from ...base import TiNode, as_bool, first as _first
 from ...registry import register
 
 
@@ -162,7 +162,7 @@ class MaskBboxCrop(TiNode):
 
 		pad = int(_first(context_padding, 32))
 		div = int(_first(divisible_by, 8))
-		shared = bool(_first(shared_bbox, False))
+		shared = as_bool(shared_bbox, False, where="Mask Bbox Crop: shared_bbox")
 		smoothing = int(_first(smoothing, 5))
 		threshold = float(_first(threshold, 0.5))
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 from .validation_gate import ANY
 
@@ -75,7 +75,7 @@ class ItemCursor(TiNode):
 			raise RuntimeError("Item Cursor: the list is empty — nothing to step through.")
 
 		i = int(first(index, 0))
-		i = (i % n) if bool(first(wrap, False)) else max(0, min(i, n - 1))
+		i = (i % n) if as_bool(wrap, False, where="Item Cursor: wrap") else max(0, min(i, n - 1))
 		item = items[i]
 
 		label = _describe(item)

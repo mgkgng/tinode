@@ -14,7 +14,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from ...base import TiNode, first as _first
+from ...base import TiNode, as_bool, first as _first
 from ...registry import register
 
 
@@ -59,7 +59,7 @@ class MaskCropCenterFill(TiNode):
 		)
 		size = int(_first(size, 512))
 		padding = int(_first(padding, 32))
-		apply_mask = bool(_first(apply_mask, True))
+		apply_mask = as_bool(apply_mask, True, where="Mask Crop Center Fill: apply_mask")
 		threshold = float(_first(threshold, 0.5))
 
 		H, W, C = img.shape

@@ -21,7 +21,7 @@ import fnmatch
 
 import torch
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 from ._video_io import VIDEO_EXTS
 from . import _mask_store as store
@@ -159,16 +159,17 @@ class LoadMasks(TiNode):
 				it.get("source_path", ""), it.get("stem", ""), src) or ""
 
 		nth = max(1, int(first(every_nth, 1)))
+		only_unfilled = as_bool(only_unfilled, False, where="Load Masks: only_unfilled")
 		for it in found:
 			it["every_nth"] = nth              # ONE switch drives every loader
 		items = [it for it in found if match_stem(it.get("stem", ""), stems)]
-		if bool(first(only_unfilled, False)):
+		if only_unfilled:
 			items = [it for it in items if not it.get("has_filled")]
 		if not items:
 			raise RuntimeError(
 				f"Load Masks: {len(found)} crop(s) in {root}, but none matched "
 				f"(stems={str(first(stems,'')).strip()!r}, "
-				f"only_unfilled={bool(first(only_unfilled, False))}).")
+				f"only_unfilled={only_unfilled}).")
 
 		report = build_report(found, items, root)
 		print("[tinode] Load Masks:\n" + report)

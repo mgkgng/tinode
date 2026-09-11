@@ -27,7 +27,7 @@ import os
 import random
 import re
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 
 _NUMBER = re.compile(r"^\s*\d+\s*[.)\]]\s*")
@@ -245,7 +245,7 @@ class RandomItem(TiNode):
 				"`1. **Ball** - A portable spherical object.` or just `Ball`.")
 		style = str(first(format, "name"))
 		picks = choose(items, int(first(seed, 0)), int(first(count, 1)),
-					   bool(first(unique, True)))
+					   as_bool(unique, True, where="Random Item: unique"))
 		body = "\n".join(format_item(p, style) for p in picks)
 		head = picks[0]
 		print(f"[tinode] Random Item: {len(picks)} of {len(items)} "

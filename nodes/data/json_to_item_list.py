@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 
 
@@ -139,6 +139,7 @@ class JsonToItemList(TiNode):
 	FUNCTION = "execute"
 
 	def execute(self, json_text, pretty=False):
+		pretty = as_bool(pretty, False, where="JSON To Item List: pretty")
 		raw = parse_items(json_text)
 		if not raw:
 			# ForeachListBegin would die on an empty list with an IndexError,

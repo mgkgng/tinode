@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 
 
@@ -55,6 +55,7 @@ class MaskTranslate(TiNode):
 	FUNCTION = "execute"
 
 	def execute(self, mask, offset_x, offset_y, frames=1, wrap=False):
+		wrap = as_bool(wrap, False, where="Mask Translate: wrap")
 		if mask.dim() == 2:
 			mask = mask.unsqueeze(0)
 

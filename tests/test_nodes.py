@@ -1630,6 +1630,48 @@ def test_insert_then_trim_restores_the_base():
 	assert torch.equal(back, base)
 
 
+def test_boolean_widgets_are_parsed_not_cast():
+	"""No BOOLEAN widget may reach its node through bool() or a bare truthiness.
+
+	ComfyUI range-checks LITERAL widget values only — the check sits in the else
+	branch of the is-link test in execution.py — so a BOOLEAN arriving over a
+	wire is whatever the upstream emitted, possibly the STRING "false". bool()
+	reports that as True, i.e. a toggle that silently turns itself on. as_bool()
+	parses instead, and refuses anything ambiguous.
+
+	This is a whole-pack guard rather than a per-node test because the failure is
+	invisible at the call site: the code reads correctly and only misbehaves when
+	someone wires the widget up.
+	"""
+	import re
+
+	nodes_dir = os.path.join(
+		os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "nodes")
+	names, offenders = set(), []
+	files = []
+	for root, _dirs, fs in os.walk(nodes_dir):
+		for f in fs:
+			if f.endswith(".py"):
+				path = os.path.join(root, f)
+				text = open(path, encoding="utf-8").read()
+				files.append((path, text))
+				names |= set(re.findall(r'"(\w+)"\s*:\s*\(\s*"BOOLEAN"', text))
+
+	assert names, "no BOOLEAN widgets found — the scan is looking in the wrong place"
+	for path, text in files:
+		for n, line in enumerate(text.split("\n"), 1):
+			if line.lstrip().startswith("#"):
+				continue
+			for name in names:
+				if re.search(rf"\bbool\(\s*_?first\(\s*{name}\b", line) or \
+				   re.search(rf"\bbool\(\s*{name}\s*\)", line):
+					rel = os.path.relpath(path, os.path.dirname(nodes_dir))
+					offenders.append(f"{rel}:{n}: {line.strip()}")
+	assert not offenders, (
+		"BOOLEAN widget cast instead of parsed — use as_bool():\n  "
+		+ "\n  ".join(sorted(offenders)))
+
+
 def test_web_js_calls_are_all_defined():
 	"""Catch a helper that is called but no longer defined.
 

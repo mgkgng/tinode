@@ -10,7 +10,7 @@ reordered crop batch.
 
 from __future__ import annotations
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 from .batch_drop import parse_keep
 from .batch_pick import parse_pick
@@ -46,7 +46,8 @@ class CropInfoDropIndices(TiNode):
 	FUNCTION = "execute"
 
 	def execute(self, crop_info, indices, one_based=True):
-		keep = parse_keep(indices, len(crop_info["items"]), one_based)
+		keep = parse_keep(indices, len(crop_info["items"]),
+						  as_bool(one_based, True, where="Crop Info Drop Indices: one_based"))
 		if keep is None:
 			return (crop_info,)
 		return (_rebuild(crop_info, keep),)
@@ -74,7 +75,8 @@ class CropInfoPickIndices(TiNode):
 	FUNCTION = "execute"
 
 	def execute(self, crop_info, indices, one_based=True):
-		keep = parse_pick(indices, len(crop_info["items"]), one_based)
+		keep = parse_pick(indices, len(crop_info["items"]),
+						  as_bool(one_based, True, where="Crop Info Pick Indices: one_based"))
 		if keep is None:
 			return (crop_info,)
 		return (_rebuild(crop_info, keep),)

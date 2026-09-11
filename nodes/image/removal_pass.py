@@ -13,7 +13,7 @@ original.
 
 from __future__ import annotations
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 from . import _mask_store as store
 from .load_masks import build_report, match_stem, resolve_source, _abs_source_dir
@@ -101,7 +101,7 @@ class SaveFilled(TiNode):
 			  f"{n} frame(s) -> {fdir}")
 
 		ui = {"ti_filled": [{"stem": item.get("stem"), "frames": n, "variant": variant}]}
-		if bool(first(preview, True)):
+		if as_bool(preview, True, where="Save Filled: preview"):
 			nth = max(1, int(item.get("every_nth", 1)))
 			fps = (float(first(preview_fps, 0.0))
 				   or (float(item.get("fps", 0.0)) / nth)
@@ -221,7 +221,7 @@ class LoadClips(TiNode):
 			crops.sort(key=lambda c: (int(c.get("chunk_index", -1)),
 									  int(c.get("crop_index", 0))))
 			done = [c for c in crops if c.get(flag)]
-			if bool(first(require_filled, True)):
+			if as_bool(require_filled, True, where="Load Clips: require_filled"):
 				if len(done) != len(crops):
 					skipped.append(stem)
 					continue
@@ -313,7 +313,7 @@ class LoadClipFills(TiNode):
 		import os  # noqa: PLC0415
 
 		have_source = bool(source_path) and os.path.isfile(source_path)
-		if not have_source and bool(first(require_source, True)):
+		if not have_source and as_bool(require_source, True, where="Load Clip Fills: require_source"):
 			raise RuntimeError(
 				f"Load Clip Fills: source video for {clip.get('stem')!r} not found "
 				f"({source_path!r}). Set Load Clips' source_dir — or, if this clip's "
@@ -434,7 +434,7 @@ class CompositeCrops(TiNode):
 			[frame_starts] if frame_starts is not None else [])
 		feather = int(first(feather, 3))
 		feather_mode = first(feather_mode, "gaussian")
-		use_mask = bool(first(use_mask, True))
+		use_mask = as_bool(use_mask, True, where="Composite Crops: use_mask")
 		if not use_mask:
 			# No mask -> Paste Back writes the whole placed region, i.e. the crop
 			# rectangle, feathered at its border.

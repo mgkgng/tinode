@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 
 # Foreground components: 8-connected. Background (holes): 4-connected.
@@ -148,6 +148,7 @@ class MaskCleanIslands(TiNode):
 				threshold=0.5, soft_floor=0.0, keep_largest=False):
 		min_island_area = int(min_island_area)
 		max_hole_area = int(max_hole_area)
+		keep_largest = as_bool(keep_largest, False, where="Mask Clean Islands: keep_largest")
 		if min_island_area <= 0 and max_hole_area <= 0:
 			return (mask,)
 
@@ -161,7 +162,7 @@ class MaskCleanIslands(TiNode):
 
 		for i in range(batch.shape[0]):
 			removed, filled = _clean_frame(
-				core[i], support[i], min_island_area, max_hole_area, bool(keep_largest)
+				core[i], support[i], min_island_area, max_hole_area, keep_largest
 			)
 			if removed.any():
 				out[i][torch.from_numpy(removed).to(out.device)] = 0.0

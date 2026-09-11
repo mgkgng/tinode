@@ -24,7 +24,7 @@ import os
 
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 from ._video_io import encode
 
@@ -67,6 +67,7 @@ class SaveVideo(TiNode):
 				colorspace="bt709", save_output=True):
 		import folder_paths  # noqa: PLC0415
 
+		save_output = as_bool(save_output, True, where="Save Video: save_output")
 		imgs = images if images.dim() == 4 else images.unsqueeze(0)
 		N, H, W, C = imgs.shape
 

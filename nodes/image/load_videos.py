@@ -31,7 +31,7 @@ from __future__ import annotations
 import fnmatch
 import os
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 from ._video_io import VIDEO_EXTS
 
@@ -275,6 +275,7 @@ class LoadVideos(TiNode):
 		return "|".join(f"{p}:{os.path.getmtime(p)}" for p in paths)
 
 	def execute(self, directory="", pattern="", filenames="", reverse=False):
+		reverse = as_bool(reverse, False, where="Load Videos: reverse")
 		paths = resolve_video_files(directory, filenames, pattern, reverse)
 		if VideoFromFile is None:
 			raise RuntimeError(

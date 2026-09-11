@@ -23,7 +23,7 @@ import os
 
 import torch
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 from ...schema import validate_crop_xform
 from . import _mask_store as store
@@ -120,6 +120,7 @@ class SaveMasks(TiNode):
 		from PIL import Image  # noqa: PLC0415
 
 		crop_info = first(crop_info)
+		overwrite = as_bool(overwrite, True, where="Save Crop & Mask: overwrite")
 		validate_crop_xform(crop_info)
 		stem = os.path.basename(str(first(stem, "")).strip())
 		crop_index = int(first(crop_index, 0))

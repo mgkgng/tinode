@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import re
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 from .json_to_item_list import to_socket_str
 
@@ -251,6 +251,8 @@ class JsonPath(TiNode):
 	# function of the inputs, so ComfyUI's own cache key is already correct.
 
 	def execute(self, json_text, path, strict=True, default="", pretty=False):
+		strict = as_bool(strict, True, where="JSON Path: strict")
+		pretty = as_bool(pretty, False, where="JSON Path: pretty")
 		text = (json_text or "").strip()
 		if not text:
 			raise ValueError("JSON Path: json_text is empty.")

@@ -25,7 +25,7 @@ import os
 
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 from ._video_io import VIDEO_EXTS, decode, probe
 
@@ -127,7 +127,7 @@ class LoadVideo(TiNode):
 		imgs, info = decode(
 			path, force_rate=float(force_rate), skip_first=int(skip_first_frames),
 			every_nth=int(select_every_nth), cap=int(frame_load_cap),
-			width=int(w or 0), height=int(h or 0), full_range=bool(force_full_range),
+			width=int(w or 0), height=int(h or 0), full_range=as_bool(force_full_range, False, where="Load Video: force_full_range"),
 			tonemap=str(tonemap_hdr),
 		)
 		fps = float(force_rate) if force_rate and force_rate > 0 else (info["fps"] or 0.0)

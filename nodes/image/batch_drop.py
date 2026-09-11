@@ -16,7 +16,7 @@ import re
 
 import torch
 
-from ...base import TiNode, first as _first
+from ...base import TiNode, as_bool, first as _first
 from ...registry import register
 
 _INT_TOKEN = re.compile(r"^[0-9]+$")
@@ -84,7 +84,7 @@ class BatchDropIndices(TiNode):
 			[im if im.dim() == 4 else im.unsqueeze(0) for im in imgs], dim=0
 		)
 		idx = _first(indices, "")
-		ob = _first(one_based, True)
+		ob = as_bool(one_based, True, where="Batch Drop Indices: one_based")
 
 		keep = parse_keep(idx, batch.shape[0], ob)
 		if keep is None:

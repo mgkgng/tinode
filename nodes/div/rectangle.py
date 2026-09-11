@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import torch
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 
 
@@ -152,7 +152,7 @@ class DivideRectangle(TiNode):
 		overlap = max(0, int(first(overlap, 0)))
 
 		if first(by, "count") == "size":
-			exact = bool(first(exact_size, False))
+			exact = as_bool(exact_size, False, where="Divide Rectangle: exact_size")
 			row_spans = size_spans(H, int(first(tile_height, 512)), overlap, exact)
 			col_spans = size_spans(W, int(first(tile_width, 512)), overlap, exact)
 		else:

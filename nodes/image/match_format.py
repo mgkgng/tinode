@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 from .validation_gate import ANY
 from ._video_io import probe
@@ -113,7 +113,7 @@ class MatchSourceFormat(TiNode):
 				f"`video`, or give `source_path` (got {path!r}).")
 
 		info = probe(path)
-		fmt = ("png (lossless frames)" if bool(first(force_png, False))
+		fmt = ("png (lossless frames)" if as_bool(force_png, False, where="Match Source Format: force_png")
 			   else format_for(_codec_of(path, info)))
 		pix = pix_fmt_for(info.get("pix_fmt"))
 		rng = range_for(info.get("color_range"))

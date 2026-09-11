@@ -27,7 +27,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from ...base import TiNode, first
+from ...base import TiNode, as_bool, first
 from ...registry import register
 
 _LAYOUTS = ["side_by_side", "stacked", "split", "difference"]
@@ -124,7 +124,7 @@ class CompareVideos(TiNode):
 
 		a, b, notes = _conform(a, b)
 		layout = str(first(layout, "side_by_side"))
-		if bool(first(labels, True)) and layout in ("side_by_side", "stacked"):
+		if as_bool(labels, True, where="Compare Videos: labels") and layout in ("side_by_side", "stacked"):
 			a, b = _label(a, "BEFORE"), _label(b, "AFTER")
 
 		if layout == "stacked":

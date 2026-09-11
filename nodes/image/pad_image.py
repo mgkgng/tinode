@@ -20,7 +20,7 @@ import re
 
 import torch
 
-from ...base import TiNode
+from ...base import TiNode, as_bool
 from ...registry import register
 
 _HEX3 = re.compile(r"^[0-9a-fA-F]{3}$")
@@ -73,6 +73,7 @@ class PadImage(TiNode):
 
 	def execute(self, image, top=0, bottom=0, left=0, right=0,
 				color="#000000", invert_mask=False):
+		invert_mask = as_bool(invert_mask, False, where="Pad Image: invert_mask")
 		imgs = image if image.dim() == 4 else image.unsqueeze(0)  # [N,H,W,C]
 		N, H, W, C = imgs.shape
 		t, b, l, r = (max(0, int(v)) for v in (top, bottom, left, right))
