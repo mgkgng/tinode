@@ -14,7 +14,12 @@ import { app } from "../../scripts/app.js";
 const AGENCY = new URLSearchParams(window.location.search).get("agency_origin");
 
 function send(message) {
-	window.parent.postMessage(message, AGENCY);
+	try {
+		window.parent.postMessage(message, AGENCY);
+	} catch (error) {
+		// Never let an uncloneable value swallow a message silently.
+		window.parent.postMessage(JSON.parse(JSON.stringify(message)), AGENCY);
+	}
 }
 
 let saveToAgency = null;
@@ -53,7 +58,12 @@ function saveButton() {
 		button.textContent = "Saving…";
 		try {
 			const { workflow, output } = await app.graphToPrompt();
-			send({ type: "agency:save", workflow, api: output });
+			// Round-trip through JSON: the graph can hold reactive proxies (Vue,
+			// node extensions) that postMessage's structured clone refuses with
+			// "DataCloneError: Proxy object could not be cloned". JSON is what is
+			// saved anyway, so nothing is lost.
+			const plain = JSON.parse(JSON.stringify({ workflow, api: output }));
+			send({ type: "agency:save", ...plain });
 		} catch (error) {
 			send({ type: "agency:error", message: String(error) });
 			button.disabled = false;
