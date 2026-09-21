@@ -17,10 +17,29 @@ function send(message) {
 	window.parent.postMessage(message, AGENCY);
 }
 
+let saveToAgency = null;
+
+// Inside Agency OS, Ctrl/Cmd+S means "Save to Agency OS". ComfyUI's own save
+// writes only to this editor's private user folder, which Agency OS never
+// reads — so it would look saved and not be.
+function takeOverCtrlS() {
+	window.addEventListener(
+		"keydown",
+		(event) => {
+			if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "s") {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				saveToAgency?.();
+			}
+		},
+		true,
+	);
+}
+
 function saveButton() {
 	const button = document.createElement("button");
 	button.textContent = "Save to Agency OS";
-	button.title = "Send this workflow back to the Agency OS Lab";
+	button.title = "Send this workflow back to the Agency OS Lab (Ctrl+S)";
 	button.style.cssText = [
 		// Bottom centre: the corners hold ComfyUI's own canvas controls.
 		"position:fixed", "left:50%", "bottom:16px", "transform:translateX(-50%)", "z-index:10000",
@@ -28,7 +47,8 @@ function saveButton() {
 		"background:#4f46e5", "color:white", "font:600 13px system-ui,sans-serif",
 		"cursor:pointer", "box-shadow:0 4px 16px rgba(0,0,0,.4)",
 	].join(";");
-	button.addEventListener("click", async () => {
+	const save = async () => {
+		if (button.disabled) return;
 		button.disabled = true;
 		button.textContent = "Saving…";
 		try {
@@ -39,7 +59,9 @@ function saveButton() {
 			button.disabled = false;
 			button.textContent = "Save to Agency OS";
 		}
-	});
+	};
+	saveToAgency = save;
+	button.addEventListener("click", save);
 	window.addEventListener("message", (event) => {
 		if (event.origin !== AGENCY) return;
 		if (event.data?.type === "agency:saved" || event.data?.type === "agency:save-failed") {
@@ -73,6 +95,7 @@ app.registerExtension({
 		});
 
 		saveButton();
+		takeOverCtrlS();
 		send({ type: "agency:ready" });
 	},
 });
